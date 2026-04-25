@@ -3,12 +3,30 @@ Application configuration — loads from .env file.
 """
 
 import os
+from pathlib import Path
+from urllib.parse import urlparse
+
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     # OpenAI
     OPENAI_API_KEY: str = ""
+
+    # Supabase / Postgres
+    SUPABASE_URL: str = ""
+    SUPABASE_ANON_KEY: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
+    SUPABASE_DB_PASSWORD: str = ""
+    SUPABASE_DB_HOST: str = "aws-0-us-east-1.pooler.supabase.com"
+    SUPABASE_DB_PORT: int = 6543
+    SUPABASE_DB_NAME: str = "postgres"
+    SUPABASE_DB_USER: str = "postgres"
+    DATABASE_URL: str = ""
+
+    # Next.js-compatible env names
+    NEXT_PUBLIC_SUPABASE_URL: str = ""
+    NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: str = ""
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     LLM_MODEL: str = "gpt-4o-mini"
     EMBEDDING_DIMENSIONS: int = 1536
@@ -34,9 +52,73 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE_MB: int = 50
 
     class Config:
-        env_file = ".env"
+        env_file = (
+            str(Path(__file__).resolve().parents[1] / ".env"),
+            ".env",
+        )
         env_file_encoding = "utf-8"
         extra = "ignore"
+
+    @property
+    def supabase_url(self) -> str:
+        return self.NEXT_PUBLIC_SUPABASE_URL or self.SUPABASE_URL
+
+    @property
+    def supabase_api_key(self) -> str:
+        return (
+            self.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+            or self.SUPABASE_ANON_KEY
+            or self.SUPABASE_SERVICE_ROLE_KEY
+        )
+
+    @property
+    def supabase_project_ref(self) -> str:
+        url = self.supabase_url
+        if not url:
+            return ""
+
+        hostname = urlparse(url).hostname or ""
+        if hostname.endswith(".supabase.co"):
+            return hostname.split(".")[0]
+        return ""
+
+    @property
+    def postgres_dsn(self) -> str:
+        candidates = self.postgres_dsn_candidates
+        return candidates[0] if candidates else ""
+
+    @property
+    def postgres_dsn_candidates(self) -> list[str]:
+        if self.DATABASE_URL:
+            return [self.DATABASE_URL]
+
+        project_ref = self.supabase_project_ref
+        if not project_ref or not self.SUPABASE_DB_PASSWORD:
+            return []
+
+        from urllib.parse import quote
+
+        password = quote(self.SUPABASE_DB_PASSWORD, safe="")
+        direct_user = quote(self.SUPABASE_DB_USER, safe="")
+        pool_user = quote(f"{self.SUPABASE_DB_USER}.{project_ref}", safe="")
+
+        return [
+            (
+                f"postgresql://{direct_user}:{password}"
+                f"@db.{project_ref}.supabase.co:5432/{self.SUPABASE_DB_NAME}"
+                "?sslmode=require"
+            ),
+            (
+                f"postgresql://{pool_user}:{password}"
+                f"@{self.SUPABASE_DB_HOST}:{self.SUPABASE_DB_PORT}/{self.SUPABASE_DB_NAME}"
+                "?sslmode=require"
+            ),
+            (
+                f"postgresql://{direct_user}:{password}"
+                f"@{self.SUPABASE_DB_HOST}:{self.SUPABASE_DB_PORT}/{self.SUPABASE_DB_NAME}"
+                "?sslmode=require"
+            ),
+        ]
 
 
 settings = Settings()

@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from config import settings
 from rag_pipeline import RAGPipeline
+from supabase_health import check_postgres, check_supabase_http
 
 # ── Logging Setup ──────────────────────────────────────────────────
 
@@ -96,13 +97,36 @@ class DeleteRequest(BaseModel):
 # ── Endpoints ──────────────────────────────────────────────────────
 
 @app.get("/health")
-async def health_check():
+async def health_check(detail: bool = False):
     """Health check endpoint."""
-    return {
+    supabase_http = check_supabase_http()
+    postgres = check_postgres()
+    payload = {
         "status": "ok",
         "rag_initialized": rag is not None,
+        "supabase_connected": supabase_http.ok and postgres.ok,
+        "supabase": {
+            "url": settings.supabase_url,
+            "project_ref": settings.supabase_project_ref,
+            "http_ok": supabase_http.ok,
+            "postgres_ok": postgres.ok,
+        },
         "stats": rag.get_stats() if rag else None,
     }
+
+    if detail:
+        payload["supabase"]["http"] = {
+            "ok": supabase_http.ok,
+            "detail": supabase_http.detail,
+            "data": supabase_http.data,
+        }
+        payload["supabase"]["postgres"] = {
+            "ok": postgres.ok,
+            "detail": postgres.detail,
+            "data": postgres.data,
+        }
+
+    return payload
 
 
 @app.post("/upload")
