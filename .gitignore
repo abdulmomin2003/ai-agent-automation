@@ -50,3 +50,9 @@ htmlcov/
 
 # Docker
 docker-compose.override.yml
+
+# Backend data directories
+backend/vector_db/
+backend/chroma_db/
+backend/uploads/
+backend/.env

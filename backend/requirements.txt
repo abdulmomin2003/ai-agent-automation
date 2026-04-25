@@ -1,0 +1,35 @@
+# FastAPI
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# OpenAI
+openai==1.82.0
+
+# Document Parsing
+pdfplumber==0.11.6
+python-docx==1.2.0
+python-pptx==1.0.2
+openpyxl==3.1.5
+pandas==2.2.3
+beautifulsoup4==4.13.3
+markdown==3.7
+chardet==5.2.0
+
+# Chunking & Embeddings
+tiktoken==0.9.0
+
+# Vector Store (FAISS - has prebuilt Windows wheels)
+faiss-cpu==1.11.0
+
+# Hybrid Retrieval - BM25
+rank-bm25==0.2.2
+
+# Reranking
+sentence-transformers==4.1.0
+
+# Utilities
+python-dotenv==1.1.0
+pydantic==2.11.1
+pydantic-settings==2.9.1
+numpy==2.2.3
