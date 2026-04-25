@@ -11,7 +11,7 @@ import uuid
 import logging
 from typing import Optional
 
-from openai import OpenAI
+from groq import Groq
 
 from config import settings
 from document_parser import DocumentParser, ParsedDocument
@@ -46,10 +46,10 @@ class RAGPipeline:
     """
 
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or settings.OPENAI_API_KEY
+        self.api_key = api_key or settings.GROQ_API_KEY
         if not self.api_key:
             raise ValueError(
-                "OpenAI API key is required. Set OPENAI_API_KEY in .env"
+                "Groq API key is required. Set GROQ_API_KEY in .env"
             )
 
         # Initialize components
@@ -61,7 +61,7 @@ class RAGPipeline:
             vector_store=self.vector_store,
             embedding_service=self.embedding_service,
         )
-        self.llm_client = OpenAI(api_key=self.api_key)
+        self.llm_client = Groq(api_key=self.api_key)
 
         # Ensure upload directory exists
         os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
@@ -279,7 +279,7 @@ class RAGPipeline:
         messages.append({"role": "user", "content": user_message})
 
         response = self.llm_client.chat.completions.create(
-            model=settings.LLM_MODEL,
+            model=settings.GROQ_MODEL,
             messages=messages,
             temperature=0.1,  # Low temperature for factual accuracy
             max_tokens=1024,

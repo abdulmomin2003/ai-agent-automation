@@ -139,7 +139,7 @@ async def upload_document(file: UploadFile = File(...)):
     if rag is None:
         raise HTTPException(
             status_code=503,
-            detail="RAG pipeline not initialized. Check your OpenAI API key.",
+            detail="RAG pipeline not initialized. Check your Groq API key.",
         )
 
     # Validate file extension
@@ -187,7 +187,7 @@ async def query_knowledge_base(request: QueryRequest):
     if rag is None:
         raise HTTPException(
             status_code=503,
-            detail="RAG pipeline not initialized. Check your OpenAI API key.",
+            detail="RAG pipeline not initialized. Check your Groq API key.",
         )
 
     if not request.question.strip():

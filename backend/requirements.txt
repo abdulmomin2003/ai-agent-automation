@@ -3,8 +3,8 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 python-multipart==0.0.20
 
-# OpenAI
-openai==1.82.0
+# LLM API
+groq==0.11.0
 
 # Document Parsing
 pdfplumber==0.11.6

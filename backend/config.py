@@ -10,8 +10,11 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # OpenAI
-    OPENAI_API_KEY: str = ""
+    # Groq & Embeddings
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
+    EMBEDDING_DIMENSIONS: int = 384
 
     # Supabase / Postgres
     SUPABASE_URL: str = ""
@@ -27,9 +30,6 @@ class Settings(BaseSettings):
     # Next.js-compatible env names
     NEXT_PUBLIC_SUPABASE_URL: str = ""
     NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: str = ""
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
-    LLM_MODEL: str = "gpt-4o-mini"
-    EMBEDDING_DIMENSIONS: int = 1536
 
     # Chunking
     CHUNK_SIZE: int = 512          # tokens

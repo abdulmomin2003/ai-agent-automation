@@ -1,13 +1,13 @@
 """
-Embedding generation using OpenAI API.
+Embedding generation using HuggingFace Sentence Transformers.
 
-Handles batching, rate limiting, and caching for efficient embedding creation.
+Handles local embedding generation using lightweight models.
 """
 
 import logging
 from typing import Optional
 
-from openai import OpenAI
+from sentence_transformers import SentenceTransformer
 
 from config import settings
 
@@ -16,54 +16,33 @@ logger = logging.getLogger(__name__)
 
 class EmbeddingService:
     """
-    Generate embeddings using OpenAI's embedding models.
-    Supports batching for efficient processing of large document sets.
+    Generate embeddings using local sentence-transformers models.
     """
 
-    MAX_BATCH_SIZE = 100  # OpenAI batch limit
-
     def __init__(self, api_key: Optional[str] = None):
-        self.client = OpenAI(api_key=api_key or settings.OPENAI_API_KEY)
-        self.model = settings.EMBEDDING_MODEL
+        # API key is ignored for local embeddings, kept for API compatibility
+        self.model_name = settings.EMBEDDING_MODEL
         self.dimensions = settings.EMBEDDING_DIMENSIONS
+        logger.info(f"Loading embedding model: {self.model_name}")
+        self.model = SentenceTransformer(self.model_name)
+        logger.info("Embedding model loaded successfully")
 
     def embed_text(self, text: str) -> list[float]:
         """Generate embedding for a single text string."""
-        response = self.client.embeddings.create(
-            input=text,
-            model=self.model,
-        )
-        return response.data[0].embedding
+        embedding = self.model.encode(text, convert_to_numpy=True)
+        return embedding.tolist()
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """
         Generate embeddings for a batch of texts.
-        Automatically handles splitting into sub-batches if needed.
         """
         if not texts:
             return []
 
-        all_embeddings = []
-
-        for i in range(0, len(texts), self.MAX_BATCH_SIZE):
-            batch = texts[i : i + self.MAX_BATCH_SIZE]
-            logger.info(
-                f"Embedding batch {i // self.MAX_BATCH_SIZE + 1} "
-                f"({len(batch)} texts)"
-            )
-
-            response = self.client.embeddings.create(
-                input=batch,
-                model=self.model,
-            )
-
-            # Sort by index to maintain order
-            sorted_data = sorted(response.data, key=lambda x: x.index)
-            batch_embeddings = [d.embedding for d in sorted_data]
-            all_embeddings.extend(batch_embeddings)
-
-        logger.info(f"Generated {len(all_embeddings)} embeddings total")
-        return all_embeddings
+        logger.info(f"Embedding batch of {len(texts)} texts")
+        embeddings = self.model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
+        
+        return embeddings.tolist()
 
     def embed_query(self, query: str) -> list[float]:
         """Generate embedding for a search query."""
