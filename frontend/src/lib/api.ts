@@ -58,4 +58,13 @@ export const api = {
     });
     return res.data;
   },
+
+  voiceQuery: async (audioBlob: Blob): Promise<QueryResponse & { audio_url: string; question: string }> => {
+    const formData = new FormData();
+    formData.append("file", audioBlob, "voice.webm");
+    const res = await apiClient.post("/voice-query", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    return res.data;
+  },
 };

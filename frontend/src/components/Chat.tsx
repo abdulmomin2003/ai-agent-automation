@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Bot, User, Loader2, Sparkles, ChevronDown, ChevronUp, FileText } from "lucide-react";
+import { Send, Bot, User, Loader2, Sparkles, ChevronDown, ChevronUp, FileText, Mic, Square } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, QueryResponse } from "@/lib/api";
@@ -13,6 +13,7 @@ type Message = {
   content: string;
   sources?: string[];
   context_chunks?: QueryResponse["context_chunks"];
+  audio_url?: string;
 };
 
 export default function Chat() {
@@ -20,17 +21,97 @@ export default function Chat() {
     {
       id: "1",
       role: "assistant",
-      content: "Hello! I'm your AI Sales Agent. Upload some knowledge base documents in the sidebar, and I'll be able to answer any questions about them.",
+      content: "Hello! I'm your AI Sales Agent. You can type or use the microphone to talk to me.",
     },
   ]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   // Scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
+
+  const handleVoiceResponse = (audioUrl: string) => {
+    // Automatically play the returned audio
+    const audio = new Audio(process.env.NEXT_PUBLIC_API_URL ? `${process.env.NEXT_PUBLIC_API_URL}${audioUrl}` : `http://localhost:8000${audioUrl}`);
+    audio.play().catch(e => console.error("Auto-play failed:", e));
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        setIsLoading(true);
+
+        try {
+          const res = await api.voiceQuery(audioBlob);
+          
+          // Add User Message (transcribed)
+          setMessages((prev) => [
+            ...prev,
+            { id: Date.now().toString(), role: "user", content: res.question }
+          ]);
+
+          // Add AI Message
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: (Date.now() + 1).toString(),
+              role: "assistant",
+              content: res.answer,
+              sources: res.sources,
+              context_chunks: res.context_chunks,
+              audio_url: res.audio_url
+            }
+          ]);
+
+          if (res.audio_url) {
+            handleVoiceResponse(res.audio_url);
+          }
+        } catch (err) {
+          console.error("Voice query error", err);
+          setMessages((prev) => [
+            ...prev,
+            { id: Date.now().toString(), role: "assistant", content: "Sorry, I had trouble processing your voice." }
+          ]);
+        } finally {
+          setIsLoading(false);
+          // Stop all tracks
+          stream.getTracks().forEach(track => track.stop());
+        }
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (err) {
+      console.error("Microphone access denied", err);
+      alert("Please allow microphone access to use voice chat.");
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,7 +123,6 @@ export default function Chat() {
     setIsLoading(true);
 
     try {
-      // Map to history format required by backend
       const history = messages
         .filter((m) => m.role === "user" || m.role === "assistant")
         .map((m) => ({ role: m.role, content: m.content }));
@@ -65,7 +145,7 @@ export default function Chat() {
         {
           id: (Date.now() + 1).toString(),
           role: "assistant",
-          content: "Sorry, I encountered an error communicating with the server. Is the backend running?",
+          content: "Sorry, I encountered an error communicating with the server.",
         },
       ]);
     } finally {
@@ -83,7 +163,7 @@ export default function Chat() {
           </div>
           <div>
             <h2 className="font-semibold text-sm">AI Agent Chat</h2>
-            <p className="text-xs text-muted-foreground">Powered by Groq & Llama-3</p>
+            <p className="text-xs text-muted-foreground">Voice Enabled (Whisper + Edge TTS)</p>
           </div>
         </div>
       </header>
@@ -115,7 +195,10 @@ export default function Chat() {
         <div className="max-w-3xl mx-auto">
           <form
             onSubmit={handleSubmit}
-            className="relative flex items-end gap-2 bg-card border border-border rounded-2xl p-2 shadow-sm focus-within:ring-2 focus-within:ring-primary/20 focus-within:border-primary transition-all"
+            className={cn(
+              "relative flex items-end gap-2 bg-card border rounded-2xl p-2 shadow-sm transition-all",
+              isRecording ? "border-red-500/50 ring-2 ring-red-500/20" : "border-border focus-within:ring-2 focus-within:ring-primary/20 focus-within:border-primary"
+            )}
           >
             <textarea
               value={input}
@@ -126,21 +209,41 @@ export default function Chat() {
                   handleSubmit(e);
                 }
               }}
-              placeholder="Ask a question about your documents..."
-              className="flex-1 max-h-40 min-h-[44px] bg-transparent resize-none outline-none py-3 px-3 text-sm"
+              placeholder={isRecording ? "Listening..." : "Ask a question..."}
+              disabled={isRecording}
+              className="flex-1 max-h-40 min-h-[44px] bg-transparent resize-none outline-none py-3 px-3 text-sm disabled:opacity-50"
               rows={1}
             />
-            <button
-              type="submit"
-              disabled={!input.trim() || isLoading}
-              className="w-11 h-11 shrink-0 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl flex items-center justify-center transition-all disabled:opacity-50 disabled:hover:bg-primary mb-0.5 mr-0.5"
-            >
-              <Send className="w-5 h-5 ml-0.5" />
-            </button>
+            
+            <div className="flex items-center gap-1 mb-0.5 mr-0.5">
+              {isRecording ? (
+                <button
+                  type="button"
+                  onClick={stopRecording}
+                  className="w-11 h-11 shrink-0 bg-red-500 hover:bg-red-600 text-white rounded-xl flex items-center justify-center transition-all animate-pulse"
+                >
+                  <Square className="w-4 h-4 fill-current" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={startRecording}
+                  disabled={isLoading}
+                  className="w-11 h-11 shrink-0 bg-muted hover:bg-muted/80 text-foreground rounded-xl flex items-center justify-center transition-all disabled:opacity-50"
+                  title="Use Microphone"
+                >
+                  <Mic className="w-5 h-5" />
+                </button>
+              )}
+              <button
+                type="submit"
+                disabled={!input.trim() || isLoading || isRecording}
+                className="w-11 h-11 shrink-0 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl flex items-center justify-center transition-all disabled:opacity-50 disabled:hover:bg-primary"
+              >
+                <Send className="w-5 h-5 ml-0.5" />
+              </button>
+            </div>
           </form>
-          <div className="text-center mt-2 text-[10px] text-muted-foreground">
-            AI can make mistakes. Check important information.
-          </div>
         </div>
       </div>
     </div>
@@ -170,6 +273,13 @@ function MessageBubble({ msg }: { msg: Message }) {
         <div className={cn("prose prose-sm max-w-none break-words", isUser ? "prose-invert" : "dark:prose-invert")}>
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
         </div>
+
+        {/* Audio Player for TTS */}
+        {msg.audio_url && (
+          <div className="mt-3">
+            <audio controls className="h-8 w-full max-w-[200px]" src={process.env.NEXT_PUBLIC_API_URL ? `${process.env.NEXT_PUBLIC_API_URL}${msg.audio_url}` : `http://localhost:8000${msg.audio_url}`} />
+          </div>
+        )}
 
         {/* Source Citations */}
         {msg.sources && msg.sources.length > 0 && (

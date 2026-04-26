@@ -12,6 +12,7 @@ Endpoints:
 
 import os
 import shutil
+import uuid
 import logging
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -22,6 +23,7 @@ from pydantic import BaseModel
 
 from config import settings
 from rag_pipeline import RAGPipeline
+from audio_service import AudioService
 from supabase_health import check_postgres, check_supabase_http
 
 # ── Logging Setup ──────────────────────────────────────────────────
@@ -32,21 +34,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Global RAG Pipeline ───────────────────────────────────────────
+# ── Global Services ───────────────────────────────────────────────
 
 rag: Optional[RAGPipeline] = None
+audio_svc: Optional[AudioService] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize RAG pipeline on startup."""
-    global rag
+    """Initialize pipelines on startup."""
+    global rag, audio_svc
     try:
         rag = RAGPipeline()
-        logger.info("RAG Pipeline ready")
+        audio_svc = AudioService()
+        logger.info("Services ready")
     except Exception as e:
-        logger.error(f"Failed to initialize RAG pipeline: {e}")
-        logger.warning("API will run but /query and /upload will fail")
+        logger.error(f"Failed to initialize services: {e}")
     yield
     logger.info("Shutting down")
 
@@ -205,6 +208,66 @@ async def query_knowledge_base(request: QueryRequest):
     except Exception as e:
         logger.error(f"Error processing query: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/voice-query")
+async def voice_query(file: UploadFile = File(...)):
+    """
+    Takes an audio file, transcribes it, runs a RAG query, and generates speech for the answer.
+    """
+    if rag is None or audio_svc is None:
+        raise HTTPException(status_code=503, detail="Services not initialized")
+
+    # Save incoming audio temporarily
+    temp_input = os.path.join(audio_svc.audio_dir, f"in_{uuid.uuid4().hex[:8]}.webm")
+    try:
+        with open(temp_input, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+
+        # 1. STT
+        question = audio_svc.transcribe_audio(temp_input)
+        if not question.strip():
+            raise HTTPException(status_code=400, detail="Could not understand audio")
+
+        # 2. RAG Query
+        result = rag.query(
+            question=question,
+            conversation_history=None, # Voice typically acts as single-turn unless session ID provided
+            top_k=5,
+            use_reranking=True,
+        )
+
+        # 3. TTS
+        audio_path = await audio_svc.generate_speech(result["answer"])
+        audio_filename = os.path.basename(audio_path)
+
+        return {
+            "question": question,
+            "answer": result["answer"],
+            "sources": result["sources"],
+            "context_chunks": result["context_chunks"],
+            "audio_url": f"/audio/{audio_filename}",
+        }
+
+    except Exception as e:
+        logger.error(f"Voice query error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        audio_svc.clean_up(temp_input)
+
+from fastapi.responses import FileResponse
+
+@app.get("/audio/{filename}")
+async def get_audio(filename: str):
+    """Serve generated audio files."""
+    if not audio_svc:
+        raise HTTPException(status_code=503, detail="Audio service not available")
+    
+    file_path = os.path.join(audio_svc.audio_dir, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Audio not found")
+        
+    return FileResponse(file_path, media_type="audio/mpeg")
 
 
 @app.post("/ingest-text")
