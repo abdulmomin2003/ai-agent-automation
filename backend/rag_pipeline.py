@@ -19,6 +19,9 @@ from chunker import TextChunker, Chunk
 from embeddings import EmbeddingService
 from vector_store import VectorStore
 from retriever import HybridRetriever
+from agentic_workflow import create_agentic_workflow
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.callbacks import BaseCallbackHandler
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,16 @@ IMPORTANT RULES:
 """
 
 
+class ToolCallbackHandler(BaseCallbackHandler):
+    """Callback handler to intercept tool executions."""
+    def __init__(self, on_tool_call):
+        self.on_tool_call = on_tool_call
+
+    def on_tool_start(self, serialized: dict, input_str: str, **kwargs):
+        tool_name = serialized.get("name", "")
+        if self.on_tool_call and tool_name:
+            self.on_tool_call(tool_name)
+
 class RAGPipeline:
     """
     Complete RAG (Retrieval-Augmented Generation) pipeline.
@@ -45,28 +58,41 @@ class RAGPipeline:
     - Query answering: retrieve → context assembly → LLM generation
     """
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None,
+                 vector_store_dir: Optional[str] = None,
+                 system_prompt: Optional[str] = None):
         self.api_key = api_key or settings.GROQ_API_KEY
         if not self.api_key:
-            raise ValueError(
-                "Groq API key is required. Set GROQ_API_KEY in .env"
+            logger.warning(
+                "Groq API key not provided; running in local fallback mode (no remote LLM)."
             )
+
+        # Custom system prompt (per-agent) or default
+        self.system_prompt = system_prompt or SYSTEM_PROMPT
 
         # Initialize components
         self.parser = DocumentParser()
         self.chunker = TextChunker()
         self.embedding_service = EmbeddingService(api_key=self.api_key)
-        self.vector_store = VectorStore()
+        self.vector_store = VectorStore(persist_dir=vector_store_dir)
         self.retriever = HybridRetriever(
             vector_store=self.vector_store,
             embedding_service=self.embedding_service,
         )
-        self.llm_client = Groq(api_key=self.api_key)
+        try:
+            # We initialize LangGraph workflow instead of raw Groq client
+            self.agent_workflow = create_agentic_workflow(
+                retriever=self.retriever,
+                api_key=self.api_key
+            ) if self.api_key else None
+        except Exception as e:
+            logger.warning("Failed to initialize LangGraph workflow; LLM disabled: %s", e)
+            self.agent_workflow = None
 
         # Ensure upload directory exists
         os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 
-        logger.info("RAG Pipeline initialized")
+        logger.info("RAG Pipeline initialized (vector_dir=%s)", vector_store_dir or 'default')
 
     # ── Document Ingestion ─────────────────────────────────────────
 
@@ -171,121 +197,75 @@ class RAGPipeline:
         conversation_history: Optional[list[dict]] = None,
         top_k: int = 5,
         use_reranking: bool = True,
+        on_tool_call: Optional[callable] = None,
     ) -> dict:
         """
-        Answer a question using the RAG pipeline:
-        1. Retrieve relevant chunks (hybrid + rerank)
-        2. Assemble context with source attribution
-        3. Generate answer via LLM
-
-        Args:
-            question: The user's question.
-            conversation_history: List of prior messages [{role, content}].
-            top_k: Number of context chunks to use.
-            use_reranking: Whether to apply cross-encoder reranking.
-
-        Returns:
-            Dict with 'answer', 'sources', and 'context_chunks'.
+        Answer a question using the LangGraph agentic workflow:
+        1. Formulate state with history and question
+        2. Agent decides to use tools (like retrieval) or answer directly
+        3. Returns the final answer
         """
-        logger.info(f"Query: '{question[:100]}'")
+        logger.info(f"Query (LangGraph): '{question[:100]}'")
 
-        # Step 1: Retrieve
-        retrieved = self.retriever.retrieve(
-            query=question,
-            top_k=top_k,
-            use_reranking=use_reranking,
-        )
-
-        if not retrieved:
+        if not self.agent_workflow:
             return {
-                "answer": "I don't have any documents in my knowledge base yet. "
-                          "Please upload some documents first.",
+                "answer": "(LLM disabled) No LLM available to generate an answer.",
                 "sources": [],
                 "context_chunks": [],
             }
 
-        # Step 2: Format context
-        context = self._format_context(retrieved)
-        sources = self._extract_sources(retrieved)
+        # Convert conversation history to LangChain messages
+        messages = []
+        if conversation_history:
+            for msg in conversation_history[-6:]:
+                if msg["role"] == "user":
+                    messages.append(HumanMessage(content=msg["content"]))
+                elif msg["role"] == "assistant":
+                    messages.append(AIMessage(content=msg["content"]))
 
-        # Step 3: Generate answer
-        answer = self._generate_answer(
-            question=question,
-            context=context,
-            conversation_history=conversation_history,
-        )
+        # Add the current question
+        messages.append(HumanMessage(content=question))
 
-        return {
-            "answer": answer,
-            "sources": sources,
-            "context_chunks": [
-                {
-                    "text": r["text"][:200] + "..." if len(r["text"]) > 200 else r["text"],
-                    "source": r.get("metadata", {}).get("source", "unknown"),
-                    "score": round(r.get("rerank_score", r.get("rrf_score", 0)), 4),
-                }
-                for r in retrieved
-            ],
+        state = {
+            "messages": messages,
+            "system_prompt": self.system_prompt,
+            "context_chunks": [] # we could pass existing chunks here if we wanted
         }
 
-    def _format_context(self, retrieved: list[dict]) -> str:
-        """Format retrieved chunks into a context string for the LLM."""
-        context_parts = []
-        for i, doc in enumerate(retrieved):
-            source = doc.get("metadata", {}).get("source", "unknown")
-            chunk_idx = doc.get("metadata", {}).get("chunk_index", "?")
-            text = doc["text"]
-            context_parts.append(
-                f"[Source: {source} | Chunk {chunk_idx}]\n{text}"
-            )
+        # Configure callbacks
+        config = {}
+        if on_tool_call:
+            config["callbacks"] = [ToolCallbackHandler(on_tool_call)]
 
-        return "\n\n---\n\n".join(context_parts)
+        # Invoke the LangGraph workflow
+        result = self.agent_workflow.invoke(state, config=config)
+        
+        final_messages = result.get("messages", [])
+        if not final_messages:
+            return {
+                "answer": "Failed to generate an answer.",
+                "sources": [],
+                "context_chunks": [],
+            }
 
-    def _extract_sources(self, retrieved: list[dict]) -> list[str]:
-        """Extract unique source document names from retrieved chunks."""
+        final_answer = final_messages[-1].content
+
+        # Since the retriever is now a tool, tracking exact sources used is slightly different.
+        # We can look for ToolMessages in the result to see what was retrieved.
         sources = set()
-        for doc in retrieved:
-            source = doc.get("metadata", {}).get("source", "")
-            if source:
-                sources.add(source)
-        return sorted(sources)
-
-    def _generate_answer(
-        self,
-        question: str,
-        context: str,
-        conversation_history: Optional[list[dict]] = None,
-    ) -> str:
-        """Generate an answer using the LLM with retrieved context."""
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-        ]
-
-        # Add conversation history if available
-        if conversation_history:
-            # Keep last 6 messages for context window management
-            for msg in conversation_history[-6:]:
-                messages.append({
-                    "role": msg["role"],
-                    "content": msg["content"],
-                })
-
-        # Add context and question
-        user_message = (
-            f"Context from uploaded documents:\n\n{context}\n\n"
-            f"---\n\n"
-            f"Question: {question}"
-        )
-        messages.append({"role": "user", "content": user_message})
-
-        response = self.llm_client.chat.completions.create(
-            model=settings.GROQ_MODEL,
-            messages=messages,
-            temperature=0.1,  # Low temperature for factual accuracy
-            max_tokens=1024,
-        )
-
-        return response.choices[0].message.content
+        for msg in final_messages:
+            if getattr(msg, "type", "") == "tool" and msg.name == "search_knowledge_base":
+                # Very basic source extraction from tool output string
+                lines = str(msg.content).split("\\n")
+                for line in lines:
+                    if line.startswith("Source:"):
+                        sources.add(line.replace("Source:", "").strip())
+                        
+        return {
+            "answer": final_answer,
+            "sources": sorted(list(sources)),
+            "context_chunks": [], # Currently handled by tool internally
+        }
 
     # ── Management ─────────────────────────────────────────────────
 

@@ -5,6 +5,7 @@ Application configuration — loads from .env file.
 import os
 from pathlib import Path
 from urllib.parse import urlparse
+from typing import Optional
 
 from pydantic_settings import BaseSettings
 
@@ -26,6 +27,20 @@ class Settings(BaseSettings):
     SUPABASE_DB_NAME: str = "postgres"
     SUPABASE_DB_USER: str = "postgres"
     DATABASE_URL: str = ""
+
+    # Twilio
+    TWILIO_ACCOUNT_SID: str = ""
+    TWILIO_AUTH_TOKEN: str = ""
+    TWILIO_API_SECRET_KEY: str = ""
+    TWILIO_API_SID: str = ""
+    TWILIO_PHONE_NUMBER: str = ""
+
+    # ElevenLabs
+    ELEVENLABS_API_KEY: str = ""
+
+    # Email (SendGrid)
+    SENDGRID_API_KEY: Optional[str] = None
+    SENDGRID_FROM_EMAIL: str = "ai-agent@yourdomain.com"
 
     # Next.js-compatible env names
     NEXT_PUBLIC_SUPABASE_URL: str = ""

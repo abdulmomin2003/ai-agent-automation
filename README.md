@@ -52,8 +52,6 @@ The platform consists of 6 layers:
 └── README.md
 ```
 
-## 🚀 Getting Started
-
 ### Prerequisites
 
 - Python 3.11+
@@ -77,9 +75,10 @@ The platform consists of 6 layers:
    python -m venv venv
    source venv/bin/activate  # or venv\Scripts\activate on Windows
    pip install -r requirements.txt
-   cp .env.example .env
-   # Fill in your API keys in .env
+   # Fill in your API keys in the root .env file
    ```
+
+   The backend requirements pin CPU-only PyTorch so the install does not try to download large CUDA wheels.
 
 3. **Frontend setup**
    ```bash

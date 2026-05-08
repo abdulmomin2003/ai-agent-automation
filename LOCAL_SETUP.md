@@ -3,26 +3,7 @@
 Welcome to the **AI Sales Agent Platform**! This guide outlines how to get the application (both the Next.js Frontend and the Python FastAPI Backend) running smoothly on your local machine.
 
 ## 📌 Prerequisites
-1. **Docker Desktop** (Recommended for easiest setup)
-2. **OR** Node.js, Python, and Git (for manual setup)
-
----
-
-## 🐳 0. The Easy Way (Docker)
-
-If you have Docker installed, you can spin up the entire application (Frontend + Backend + Audio Dependencies) with a single command!
-
-1. Ensure your `.env` file is populated in the root directory (see section 1).
-2. Open a terminal in the root directory (`Gen_AI/Project/`).
-3. Run the following command:
-   ```bash
-   docker-compose up --build
-   ```
-4. Wait for the images to build. Once running:
-   - **Frontend:** [http://localhost:3000](http://localhost:3000)
-   - **Backend API Docs:** [http://localhost:8000/docs](http://localhost:8000/docs)
-
-*If you prefer to run things manually without Docker, follow the steps below.*
+1. **Node.js, Python, and Git** (for manual setup)
 
 ---
 
@@ -69,6 +50,7 @@ The backend handles the FAISS vector database, document parsing, `sentence-trans
    ```bash
    pip install -r requirements.txt
    ```
+   This backend requirements file pins CPU-only PyTorch to avoid large CUDA downloads during setup.
 5. Run the FastAPI development server:
    ```bash
    python main.py

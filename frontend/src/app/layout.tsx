@@ -5,8 +5,8 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
 export const metadata: Metadata = {
-  title: "AI Sales Agent",
-  description: "Upload documents and chat with your AI Sales Agent.",
+  title: "AI Agent Platform — Multi-Agent Automation",
+  description: "Create and manage AI agents with voice calling, WhatsApp, email, and intelligent knowledge bases.",
 };
 
 export default function RootLayout({
@@ -14,10 +14,9 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  // We'll enforce dark mode for this premium look
   return (
     <html lang="en" className="dark">
-      <body className={`${inter.variable} font-sans antialiased bg-background text-foreground h-screen flex flex-col overflow-hidden`}>
+      <body className={`${inter.variable} font-sans antialiased bg-background text-foreground min-h-screen`}>
         {children}
       </body>
     </html>

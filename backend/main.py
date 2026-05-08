@@ -1,13 +1,14 @@
 """
-FastAPI application — REST API for the RAG pipeline.
+FastAPI application — Multi-Agent AI Sales Platform.
 
-Endpoints:
-- POST /upload        — Upload and ingest a document
-- POST /query         — Ask a question against the knowledge base
-- POST /ingest-text   — Ingest raw text directly
-- GET  /documents     — List ingested documents
-- DELETE /documents   — Delete a specific document or clear all
-- GET  /health        — Health check
+Agent-scoped endpoints for:
+- Agent CRUD (create, list, update, delete)
+- Knowledge base management (upload, list, delete documents)
+- Chat (web chat with conversation persistence)
+- Voice queries (STT → RAG → TTS)
+- Twilio voice webhooks (inbound calls, call forwarding)
+- WhatsApp webhooks
+- Health checks
 """
 
 import os
@@ -17,16 +18,26 @@ import logging
 from typing import Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from config import settings
-from rag_pipeline import RAGPipeline
-from audio_service import AudioService
+from agent_manager import AgentManager
+from db.models import AgentCreate, AgentUpdate, ChatRequest
+from twilio_service import (
+    build_gather_twiml,
+    build_say_and_gather_twiml,
+    build_forward_twiml,
+    build_hangup_twiml,
+    detect_intent,
+)
+from voice_stream import handle_voice_stream
+from web_voice_stream import handle_web_voice_stream
 from supabase_health import check_postgres, check_supabase_http
 
-# ── Logging Setup ──────────────────────────────────────────────────
+# ── Logging Setup ──────────────────────────────────────────────
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,32 +45,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Global Services ───────────────────────────────────────────────
+# ── Global Services ───────────────────────────────────────────
 
-rag: Optional[RAGPipeline] = None
-audio_svc: Optional[AudioService] = None
+manager: Optional[AgentManager] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize pipelines on startup."""
-    global rag, audio_svc
+    """Initialize services on startup."""
+    global manager
     try:
-        rag = RAGPipeline()
-        audio_svc = AudioService()
-        logger.info("Services ready")
+        manager = AgentManager()
+        logger.info("Agent Manager initialized — services ready")
     except Exception as e:
-        logger.error(f"Failed to initialize services: {e}")
+        logger.error(f"Failed to initialize Agent Manager: {e}")
     yield
     logger.info("Shutting down")
 
 
-# ── FastAPI App ────────────────────────────────────────────────────
+# ── FastAPI App ────────────────────────────────────────────────
 
 app = FastAPI(
-    title="AI Sales Agent — RAG API",
-    description="Multi-format document ingestion and high-accuracy RAG query API",
-    version="1.0.0",
+    title="AI Sales Agent Platform — Multi-Agent API",
+    description="Create and manage multiple AI agents with voice, chat, WhatsApp, and email.",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -72,32 +81,16 @@ app.add_middleware(
 )
 
 
-# ── Request / Response Models ──────────────────────────────────────
+# ── Request / Response Models ──────────────────────────────────
 
 class QueryRequest(BaseModel):
     question: str
-    conversation_history: Optional[list[dict]] = None
+    conversation_id: Optional[str] = None
     top_k: int = 5
     use_reranking: bool = True
 
 
-class QueryResponse(BaseModel):
-    answer: str
-    sources: list[str]
-    context_chunks: list[dict]
-
-
-class IngestTextRequest(BaseModel):
-    text: str
-    source_name: str = "direct_input"
-
-
-class DeleteRequest(BaseModel):
-    source_name: Optional[str] = None
-    clear_all: bool = False
-
-
-# ── Endpoints ──────────────────────────────────────────────────────
+# ── Health Check ───────────────────────────────────────────────
 
 @app.get("/health")
 async def health_check(detail: bool = False):
@@ -106,7 +99,7 @@ async def health_check(detail: bool = False):
     postgres = check_postgres()
     payload = {
         "status": "ok",
-        "rag_initialized": rag is not None,
+        "manager_initialized": manager is not None,
         "supabase_connected": supabase_http.ok and postgres.ok,
         "supabase": {
             "url": settings.supabase_url,
@@ -114,7 +107,6 @@ async def health_check(detail: bool = False):
             "http_ok": supabase_http.ok,
             "postgres_ok": postgres.ok,
         },
-        "stats": rag.get_stats() if rag else None,
     }
 
     if detail:
@@ -132,198 +124,485 @@ async def health_check(detail: bool = False):
     return payload
 
 
-@app.post("/upload")
-async def upload_document(file: UploadFile = File(...)):
-    """
-    Upload and ingest a document into the knowledge base.
+# ══════════════════════════════════════════════════════════════
+# AGENT CRUD
+# ══════════════════════════════════════════════════════════════
 
-    Supports: PDF, DOCX, PPTX, XLSX, CSV, TXT, MD, HTML, JSON
-    """
-    if rag is None:
-        raise HTTPException(
-            status_code=503,
-            detail="RAG pipeline not initialized. Check your Groq API key.",
-        )
+@app.post("/agents")
+async def create_agent(data: AgentCreate):
+    """Create a new AI agent."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    agent = manager.create_agent(data.model_dump(exclude_none=True))
+    return {"status": "success", "agent": agent}
 
-    # Validate file extension
+
+@app.get("/agents")
+async def list_agents():
+    """List all agents."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    agents = manager.list_agents()
+    return {"agents": agents}
+
+
+@app.get("/agents/{agent_id}")
+async def get_agent(agent_id: str):
+    """Get agent details."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    agent = manager.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return {"agent": agent}
+
+
+@app.put("/agents/{agent_id}")
+async def update_agent(agent_id: str, data: AgentUpdate):
+    """Update agent configuration."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    agent = manager.update_agent(agent_id, data.model_dump(exclude_none=True))
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return {"status": "success", "agent": agent}
+
+
+@app.delete("/agents/{agent_id}")
+async def delete_agent(agent_id: str):
+    """Delete an agent and all associated data."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    deleted = manager.delete_agent(agent_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return {"status": "success", "message": "Agent deleted"}
+
+
+# ══════════════════════════════════════════════════════════════
+# KNOWLEDGE BASE (per agent)
+# ══════════════════════════════════════════════════════════════
+
+@app.post("/agents/{agent_id}/upload")
+async def upload_document(agent_id: str, file: UploadFile = File(...)):
+    """Upload and ingest a document into an agent's knowledge base."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in {
         ".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".xls",
         ".csv", ".txt", ".md", ".html", ".htm", ".json",
         ".rtf", ".log", ".xml",
     }:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file format: {ext}",
-        )
+        raise HTTPException(status_code=400, detail=f"Unsupported file format: {ext}")
 
-    # Save uploaded file
-    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-    file_path = os.path.join(settings.UPLOAD_DIR, file.filename)
+    # Save to agent-specific directory
+    upload_dir = os.path.join(settings.UPLOAD_DIR, agent_id)
+    os.makedirs(upload_dir, exist_ok=True)
+    file_path = os.path.join(upload_dir, file.filename)
 
     try:
         with open(file_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
-        # Ingest the document
-        result = rag.ingest_document(file_path)
+        file_size = os.path.getsize(file_path)
+        result = manager.upload_document(
+            agent_id=agent_id,
+            file_path=file_path,
+            filename=file.filename,
+            file_type=ext,
+            file_size=file_size,
+        )
 
-        return {
-            "status": "success",
-            "message": f"Document '{file.filename}' ingested successfully",
-            **result,
-        }
+        return {"status": "success", "message": f"Document '{file.filename}' ingested", **result}
 
     except Exception as e:
         logger.error(f"Error ingesting {file.filename}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/query", response_model=QueryResponse)
-async def query_knowledge_base(request: QueryRequest):
-    """
-    Ask a question against the ingested knowledge base.
+@app.get("/agents/{agent_id}/documents")
+async def list_documents(agent_id: str):
+    """List documents in an agent's knowledge base."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    docs = manager.get_documents(agent_id)
+    return {"documents": docs}
 
-    Uses hybrid retrieval (semantic + BM25) with cross-encoder reranking
-    for maximum accuracy.
-    """
-    if rag is None:
-        raise HTTPException(
-            status_code=503,
-            detail="RAG pipeline not initialized. Check your Groq API key.",
-        )
 
-    if not request.question.strip():
-        raise HTTPException(status_code=400, detail="Question cannot be empty")
+@app.delete("/agents/{agent_id}/documents/{doc_id}")
+async def delete_document(agent_id: str, doc_id: str):
+    """Delete a document from an agent's knowledge base."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    deleted = manager.delete_document(agent_id, doc_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"status": "success", "message": "Document deleted"}
+
+
+# ══════════════════════════════════════════════════════════════
+# CHAT (per agent)
+# ══════════════════════════════════════════════════════════════
+
+@app.post("/agents/{agent_id}/chat")
+async def chat_with_agent(agent_id: str, request: ChatRequest):
+    """Send a message to an agent. Creates or resumes a conversation."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    if not request.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     try:
-        result = rag.query(
-            question=request.question,
-            conversation_history=request.conversation_history,
-            top_k=request.top_k,
-            use_reranking=request.use_reranking,
+        result = manager.chat(
+            agent_id=agent_id,
+            message=request.message,
+            conversation_id=request.conversation_id,
         )
-        return QueryResponse(**result)
-
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error(f"Error processing query: {e}")
+        logger.error(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/voice-query")
-async def voice_query(file: UploadFile = File(...)):
-    """
-    Takes an audio file, transcribes it, runs a RAG query, and generates speech for the answer.
-    """
-    if rag is None or audio_svc is None:
-        raise HTTPException(status_code=503, detail="Services not initialized")
+# ══════════════════════════════════════════════════════════════
+# VOICE QUERY (per agent)
+# ══════════════════════════════════════════════════════════════
 
-    # Save incoming audio temporarily
-    temp_input = os.path.join(audio_svc.audio_dir, f"in_{uuid.uuid4().hex[:8]}.webm")
+@app.post("/agents/{agent_id}/voice-query")
+async def voice_query(agent_id: str, file: UploadFile = File(...)):
+    """Voice query: transcribe audio → RAG → TTS response."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    temp_dir = os.path.join(settings.UPLOAD_DIR, "audio")
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_input = os.path.join(temp_dir, f"in_{uuid.uuid4().hex[:8]}.webm")
+
     try:
         with open(temp_input, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
-        # 1. STT
-        question = audio_svc.transcribe_audio(temp_input)
-        if not question.strip():
-            raise HTTPException(status_code=400, detail="Could not understand audio")
+        result = await manager.voice_query(agent_id, temp_input)
+        return result
 
-        # 2. RAG Query
-        result = rag.query(
-            question=question,
-            conversation_history=None, # Voice typically acts as single-turn unless session ID provided
-            top_k=5,
-            use_reranking=True,
-        )
-
-        # 3. TTS
-        audio_path = await audio_svc.generate_speech(result["answer"])
-        audio_filename = os.path.basename(audio_path)
-
-        return {
-            "question": question,
-            "answer": result["answer"],
-            "sources": result["sources"],
-            "context_chunks": result["context_chunks"],
-            "audio_url": f"/audio/{audio_filename}",
-        }
-
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Voice query error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        audio_svc.clean_up(temp_input)
+        try:
+            os.remove(temp_input)
+        except OSError:
+            pass
 
-from fastapi.responses import FileResponse
 
 @app.get("/audio/{filename}")
 async def get_audio(filename: str):
     """Serve generated audio files."""
-    if not audio_svc:
-        raise HTTPException(status_code=503, detail="Audio service not available")
-    
-    file_path = os.path.join(audio_svc.audio_dir, filename)
+    audio_dir = os.path.join(settings.UPLOAD_DIR, "audio")
+    file_path = os.path.join(audio_dir, filename)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Audio not found")
-        
     return FileResponse(file_path, media_type="audio/mpeg")
 
 
-@app.post("/ingest-text")
-async def ingest_text(request: IngestTextRequest):
-    """Ingest raw text directly into the knowledge base."""
-    if rag is None:
-        raise HTTPException(
-            status_code=503,
-            detail="RAG pipeline not initialized.",
+# ══════════════════════════════════════════════════════════════
+# CONVERSATIONS (per agent)
+# ══════════════════════════════════════════════════════════════
+
+@app.get("/agents/{agent_id}/conversations")
+async def list_conversations(agent_id: str):
+    """List all conversations for an agent."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    convs = manager.get_conversations(agent_id)
+    return {"conversations": convs}
+
+
+@app.get("/agents/{agent_id}/conversations/{conv_id}/messages")
+async def get_conversation_messages(agent_id: str, conv_id: str):
+    """Get all messages in a conversation."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    messages = manager.get_messages(conv_id)
+    return {"messages": messages}
+
+
+# ══════════════════════════════════════════════════════════════
+# CALL LOGS (per agent)
+# ══════════════════════════════════════════════════════════════
+
+@app.get("/agents/{agent_id}/call-logs")
+async def list_call_logs(agent_id: str):
+    """List call logs for an agent."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    logs = manager.get_call_logs(agent_id)
+    return {"call_logs": logs}
+
+
+# ══════════════════════════════════════════════════════════════
+# TWILIO VOICE WEBHOOKS
+# ══════════════════════════════════════════════════════════════
+
+@app.post("/twilio/voice/inbound")
+async def twilio_voice_inbound(request: Request):
+    """
+    Twilio inbound voice webhook.
+
+    When someone calls the Twilio number, this endpoint:
+    1. Identifies which agent owns the phone number
+    2. Greets the caller with the agent's persona
+    3. Initiates a WebSocket Media Stream for real-time bidirectional audio
+    """
+    form = await request.form()
+    called_number = form.get("Called", "")
+    from_number = form.get("From", "")
+    call_sid = form.get("CallSid", "")
+
+    logger.info("Inbound call: %s → %s (SID: %s)", from_number, called_number, call_sid)
+
+    # Find agent by phone number
+    if manager:
+        agents = manager.list_agents()
+        agent = next(
+            (a for a in agents if a.get("twilio_phone_number") == called_number),
+            None,
         )
 
-    try:
-        result = rag.ingest_text(
-            text=request.text,
-            source_name=request.source_name,
+        if agent:
+            # Log the call
+            from db import database as db
+            conversation = db.create_conversation(
+                str(agent["id"]), channel="voice", caller_phone=from_number
+            )
+            db.create_call_log(
+                agent_id=str(agent["id"]),
+                call_sid=call_sid,
+                conversation_id=str(conversation["id"]),
+                direction="inbound",
+                from_number=from_number,
+                to_number=called_number,
+            )
+
+            # Generate TwiML to connect to WebSocket
+            # We get the host from the request headers to build the wss:// URL
+            host = request.headers.get("host", "localhost:8000")
+            # If running behind ngrok, x-forwarded-proto will be https
+            proto = request.headers.get("x-forwarded-proto", "http")
+            ws_proto = "wss" if proto == "https" else "ws"
+            
+            ws_url = f"{ws_proto}://{host}/twilio/voice/stream/{agent['id']}/{conversation['id']}"
+            
+            greeting = f"Hello! This is {agent.get('persona_name', 'AI Agent')}. How can I help you today?"
+            
+            twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="{agent.get('voice_id', 'Polly.Joanna')}">{greeting}</Say>
+    <Connect>
+        <Stream url="{ws_url}" />
+    </Connect>
+</Response>'''
+            return Response(content=twiml, media_type="application/xml")
+        
+    twiml = build_hangup_twiml("Sorry, the system is not available right now.")
+    return Response(content=twiml, media_type="application/xml")
+
+@app.websocket("/twilio/voice/stream/{agent_id}/{conv_id}")
+async def websocket_voice_endpoint(websocket: WebSocket, agent_id: str, conv_id: str):
+    """
+    WebSocket endpoint for Twilio Media Streams.
+    Receives audio, processes via VAD/STT/LangGraph, and streams TTS back.
+    """
+    if manager is None:
+        await websocket.close(code=1011)
+        return
+        
+    await handle_voice_stream(websocket, agent_id, conv_id, manager)
+
+@app.websocket("/web/voice/stream/{agent_id}/{conv_id}")
+async def web_voice_websocket_endpoint(websocket: WebSocket, agent_id: str, conv_id: str):
+    """
+    WebSocket endpoint for web browser audio streaming.
+    Receives raw PCM audio, performs VAD, and streams TTS back.
+    """
+    if manager is None:
+        await websocket.close(code=1011)
+        return
+        
+    await handle_web_voice_stream(websocket, agent_id, conv_id, manager)
+
+
+@app.post("/twilio/voice/respond")
+async def twilio_voice_respond(request: Request, agent_id: str = None, conv_id: str = None):
+    """
+    Process speech from caller and respond.
+
+    Flow: Caller speech → Twilio transcription → RAG query → TTS response → loop
+    """
+    form = await request.form()
+    speech_result = form.get("SpeechResult", "")
+    call_sid = form.get("CallSid", "")
+
+    logger.info("Voice speech: '%s' (agent=%s)", speech_result[:100], agent_id)
+
+    if not speech_result.strip():
+        twiml = build_say_and_gather_twiml(
+            text="I didn't catch that. Could you please repeat?",
+            action_url=f"/twilio/voice/respond?agent_id={agent_id}&conv_id={conv_id}",
         )
-        return {"status": "success", **result}
+        return Response(content=twiml, media_type="application/xml")
 
-    except Exception as e:
-        logger.error(f"Error ingesting text: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Check for special intents (forward, hangup)
+    intent = detect_intent(speech_result)
+
+    if intent == "forward" and agent_id and manager:
+        agent = manager.get_agent(agent_id)
+        forward_number = agent.get("forward_phone_number") if agent else None
+        if forward_number:
+            from db import database as db
+            db.update_call_log(call_sid, status="forwarded", forwarded_to=forward_number)
+            twiml = build_forward_twiml(forward_number)
+            return Response(content=twiml, media_type="application/xml")
+
+    if intent == "hangup":
+        from db import database as db
+        db.update_call_log(call_sid, status="completed")
+        twiml = build_hangup_twiml()
+        return Response(content=twiml, media_type="application/xml")
+
+    # Process through agent RAG pipeline
+    if agent_id and manager:
+        try:
+            result = manager.chat(agent_id, speech_result, conv_id, channel="voice")
+            answer = result["answer"]
+        except Exception as e:
+            logger.error("Voice RAG error: %s", e)
+            answer = "I apologize, I'm having trouble processing your request right now."
+    else:
+        answer = "I'm sorry, I'm not configured to help with that right now."
+
+    # Respond and loop
+    twiml = build_say_and_gather_twiml(
+        text=answer,
+        action_url=f"/twilio/voice/respond?agent_id={agent_id}&conv_id={conv_id}",
+    )
+    return Response(content=twiml, media_type="application/xml")
 
 
-@app.get("/documents")
-async def list_documents():
-    """List all ingested documents and stats."""
-    if rag is None:
-        raise HTTPException(status_code=503, detail="RAG not initialized")
+@app.post("/twilio/voice/status")
+async def twilio_voice_status(request: Request):
+    """Twilio call status callback."""
+    form = await request.form()
+    call_sid = form.get("CallSid", "")
+    call_status = form.get("CallStatus", "")
+    duration = form.get("CallDuration")
 
-    return rag.get_stats()
+    logger.info("Call status: %s → %s (duration=%s)", call_sid, call_status, duration)
+
+    if call_sid:
+        from db import database as db
+        db.update_call_log(
+            call_sid,
+            status=call_status,
+            duration_seconds=int(duration) if duration else None,
+        )
+
+    return {"status": "ok"}
 
 
-@app.delete("/documents")
-async def delete_documents(request: DeleteRequest):
-    """Delete a specific document or clear all documents."""
-    if rag is None:
-        raise HTTPException(status_code=503, detail="RAG not initialized")
+# ══════════════════════════════════════════════════════════════
+# WHATSAPP WEBHOOK
+# ══════════════════════════════════════════════════════════════
 
-    if request.clear_all:
-        rag.clear_all()
-        return {"status": "success", "message": "All documents cleared"}
+@app.post("/twilio/whatsapp/inbound")
+async def twilio_whatsapp_inbound(request: Request):
+    """
+    Twilio WhatsApp inbound webhook.
 
-    if request.source_name:
-        count = rag.delete_document(request.source_name)
-        return {
-            "status": "success",
-            "message": f"Deleted {count} chunks from '{request.source_name}'",
-        }
+    Processes incoming WhatsApp messages through the agent's RAG pipeline.
+    """
+    form = await request.form()
+    from_number = form.get("From", "").replace("whatsapp:", "")
+    to_number = form.get("To", "").replace("whatsapp:", "")
+    body = form.get("Body", "")
 
-    raise HTTPException(
-        status_code=400,
-        detail="Provide source_name or set clear_all=true",
+    logger.info("WhatsApp from %s: %s", from_number, body[:100])
+
+    if not body.strip() or not manager:
+        return Response(
+            content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+            media_type="application/xml",
+        )
+
+    # Find agent by phone number
+    agents = manager.list_agents()
+    agent = next(
+        (a for a in agents
+         if a.get("twilio_phone_number") == to_number and a.get("whatsapp_enabled")),
+        None,
     )
 
+    if agent:
+        try:
+            result = manager.chat(
+                str(agent["id"]), body, channel="whatsapp"
+            )
+            reply = result["answer"]
+        except Exception as e:
+            logger.error("WhatsApp RAG error: %s", e)
+            reply = "Sorry, I'm having trouble right now. Please try again."
+    else:
+        reply = "This number is not configured for WhatsApp messaging."
 
-# ── Run ────────────────────────────────────────────────────────────
+    # Build TwiML response
+    from xml.etree.ElementTree import Element, SubElement, tostring
+    resp = Element("Response")
+    msg = SubElement(resp, "Message")
+    msg.text = reply[:4096]
+
+    twiml = '<?xml version="1.0" encoding="UTF-8"?>' + tostring(resp, encoding="unicode")
+    return Response(content=twiml, media_type="application/xml")
+
+
+# ══════════════════════════════════════════════════════════════
+# LEGACY ENDPOINTS (backward compatibility)
+# ══════════════════════════════════════════════════════════════
+
+@app.post("/upload")
+async def upload_document_legacy(file: UploadFile = File(...)):
+    """Legacy upload — redirects to first available agent."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    agents = manager.list_agents()
+    if not agents:
+        raise HTTPException(status_code=400, detail="No agents exist. Create an agent first.")
+    return await upload_document(str(agents[0]["id"]), file)
+
+
+@app.post("/query")
+async def query_legacy(request: QueryRequest):
+    """Legacy query — uses first available agent."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    agents = manager.list_agents()
+    if not agents:
+        raise HTTPException(status_code=400, detail="No agents exist. Create an agent first.")
+
+    chat_req = ChatRequest(
+        message=request.question,
+        conversation_id=request.conversation_id,
+    )
+    return await chat_with_agent(str(agents[0]["id"]), chat_req)
+
+
+# ── Run ────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import uvicorn
