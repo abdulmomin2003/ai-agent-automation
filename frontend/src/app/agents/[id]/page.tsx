@@ -5,14 +5,15 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeft, Send, Bot, User, Loader2, Sparkles, FileText, Mic, Square,
   Upload, Trash2, Phone, MessageSquare, Mail, Settings, ChevronDown,
-  ChevronUp, Clock, AlertCircle, Check, X, Save, PhoneCall, PhoneOff
+  ChevronUp, Clock, AlertCircle, Check, X, Save, PhoneCall, PhoneOff,
+  Calendar, CheckCircle2, XCircle, RefreshCw, PlusCircle,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, Agent, KnowledgeDocument, Conversation, Message as ApiMessage, CallLog, ChatResponse, AgentCreate } from "@/lib/api";
+import { api, Agent, KnowledgeDocument, Conversation, Message as ApiMessage, CallLog, ChatResponse, AgentCreate, Booking, AvailabilityEntry } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-type Tab = "chat" | "knowledge" | "conversations" | "calls" | "settings";
+type Tab = "chat" | "knowledge" | "conversations" | "calls" | "bookings" | "tools" | "settings";
 
 type ChatMsg = {
   id: string;
@@ -41,6 +42,8 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
     { id: "knowledge", label: "Knowledge Base", icon: FileText },
     { id: "conversations", label: "Conversations", icon: Clock },
     { id: "calls", label: "Call Logs", icon: Phone },
+    { id: "bookings", label: "Bookings", icon: Calendar },
+    { id: "tools", label: "Tools", icon: Sparkles },
     { id: "settings", label: "Settings", icon: Settings },
   ];
 
@@ -79,6 +82,8 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
         {tab === "knowledge" && <KnowledgeTab agentId={agentId} />}
         {tab === "conversations" && <ConversationsTab agentId={agentId} />}
         {tab === "calls" && <CallsTab agentId={agentId} />}
+        {tab === "bookings" && <BookingsTab agentId={agentId} agent={agent} />}
+        {tab === "tools" && <ToolsTab agentId={agentId} />}
         {tab === "settings" && <SettingsTab agent={agent} onUpdate={setAgent} />}
       </div>
     </div>
@@ -407,13 +412,33 @@ function ConversationsTab({ agentId }: { agentId: string }) {
   const [convs, setConvs] = useState<Conversation[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [msgs, setMsgs] = useState<ApiMessage[]>([]);
+  const [generatingSummary, setGeneratingSummary] = useState<string | null>(null);
 
-  useEffect(() => { api.listConversations(agentId).then(setConvs).catch(console.error); }, [agentId]);
+  const loadConvs = () => api.listConversations(agentId).then(setConvs).catch(console.error);
+  useEffect(() => { loadConvs(); }, [agentId]);
 
   const loadMsgs = async (convId: string) => {
     setSelected(convId);
     const m = await api.getMessages(agentId, convId);
     setMsgs(m);
+  };
+
+  const handleEndConversation = async (convId: string) => {
+    setGeneratingSummary(convId);
+    try {
+      await api.endConversation(agentId, convId);
+      await loadConvs();
+    } catch (e) { console.error(e); }
+    finally { setGeneratingSummary(null); }
+  };
+
+  const handleGenerateSummary = async (convId: string) => {
+    setGeneratingSummary(convId);
+    try {
+      await api.generateSummary(agentId, convId);
+      await loadConvs();
+    } catch (e) { console.error(e); }
+    finally { setGeneratingSummary(null); }
   };
 
   const channelIcon: Record<string, any> = { web: MessageSquare, voice: Phone, whatsapp: MessageSquare, email: Mail };
@@ -424,15 +449,36 @@ function ConversationsTab({ agentId }: { agentId: string }) {
         <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">Conversations ({convs.length})</h3>
         {convs.length === 0 ? <p className="text-sm text-muted-foreground text-center py-8">No conversations yet.</p> : convs.map(c => {
           const Icon = channelIcon[c.channel] || MessageSquare;
+          const isGenerating = generatingSummary === c.id;
           return (
-            <button key={c.id} onClick={() => loadMsgs(c.id)} className={cn("w-full text-left p-3 rounded-xl transition-all", selected === c.id ? "bg-primary/10 border border-primary/30" : "hover:bg-muted border border-transparent")}>
-              <div className="flex items-center gap-2 mb-1">
-                <Icon className="w-3.5 h-3.5 text-muted-foreground" />
-                <span className="text-xs font-medium capitalize">{c.channel}</span>
-                <span className={cn("ml-auto text-[10px] px-1.5 py-0.5 rounded", c.status === "active" ? "bg-success/10 text-success" : "bg-muted text-muted-foreground")}>{c.status}</span>
+            <div key={c.id} className={cn("w-full text-left p-3 rounded-xl transition-all border", selected === c.id ? "bg-primary/10 border-primary/30" : "hover:bg-muted border-transparent")}>
+              <button onClick={() => loadMsgs(c.id)} className="w-full text-left">
+                <div className="flex items-center gap-2 mb-1">
+                  <Icon className="w-3.5 h-3.5 text-muted-foreground" />
+                  <span className="text-xs font-medium capitalize">{c.channel}</span>
+                  <span className={cn("ml-auto text-[10px] px-1.5 py-0.5 rounded", c.status === "active" ? "bg-success/10 text-success" : "bg-muted text-muted-foreground")}>{c.status}</span>
+                </div>
+                <p className="text-xs text-muted-foreground">{c.message_count} messages · {new Date(c.started_at).toLocaleDateString()}</p>
+                {c.summary && <p className="text-xs text-foreground mt-1 line-clamp-2 italic opacity-70">{c.summary}</p>}
+              </button>
+              {/* Action buttons */}
+              <div className="flex gap-1 mt-2">
+                {c.status === "active" && (
+                  <button onClick={() => handleEndConversation(c.id)} disabled={isGenerating}
+                    className="flex-1 text-[10px] py-1 px-2 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-all disabled:opacity-50 flex items-center justify-center gap-1">
+                    {isGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
+                    End &amp; Summarize
+                  </button>
+                )}
+                {c.status !== "active" && !c.summary && (
+                  <button onClick={() => handleGenerateSummary(c.id)} disabled={isGenerating}
+                    className="flex-1 text-[10px] py-1 px-2 rounded-lg bg-muted hover:bg-muted/80 transition-all disabled:opacity-50 flex items-center justify-center gap-1">
+                    {isGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                    Generate Summary
+                  </button>
+                )}
               </div>
-              <p className="text-xs text-muted-foreground">{c.message_count} messages · {new Date(c.started_at).toLocaleDateString()}</p>
-            </button>
+            </div>
           );
         })}
       </div>
@@ -496,6 +542,8 @@ function SettingsTab({ agent, onUpdate }: { agent: Agent; onUpdate: (a: Agent) =
     persona_name: agent.persona_name, voice_id: agent.voice_id,
     call_enabled: agent.call_enabled, whatsapp_enabled: agent.whatsapp_enabled, email_enabled: agent.email_enabled,
     twilio_phone_number: agent.twilio_phone_number || "", forward_phone_number: agent.forward_phone_number || "",
+    notification_email: (agent as any).notification_email || "",
+    send_summary_emails: (agent as any).send_summary_emails ?? true,
   });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -529,6 +577,15 @@ function SettingsTab({ agent, onUpdate }: { agent: Agent; onUpdate: (a: Agent) =
           <div><label className="block text-sm font-medium mb-2">Twilio Phone</label><input value={form.twilio_phone_number||""} onChange={e=>setForm(p=>({...p,twilio_phone_number:e.target.value}))} placeholder="+1..." className="w-full px-4 py-3 rounded-xl bg-card border border-border text-sm outline-none focus:border-primary transition-all" /></div>
           <div><label className="block text-sm font-medium mb-2">Forward Number</label><input value={form.forward_phone_number||""} onChange={e=>setForm(p=>({...p,forward_phone_number:e.target.value}))} placeholder="+1..." className="w-full px-4 py-3 rounded-xl bg-card border border-border text-sm outline-none focus:border-primary transition-all" /></div>
         </div>
+        {/* Email Notifications */}
+        <div className="p-4 rounded-xl border border-border bg-card/50 space-y-3">
+          <h3 className="text-sm font-semibold flex items-center gap-2"><Mail className="w-4 h-4 text-primary" /> Email Notifications</h3>
+          <div><label className="block text-xs text-muted-foreground mb-1">Notification Email (receives call summaries)</label><input value={(form as any).notification_email||""} onChange={e=>setForm(p=>({...p,notification_email:e.target.value}))} placeholder="owner@example.com" className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm outline-none focus:border-primary transition-all" /></div>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" checked={!!(form as any).send_summary_emails} onChange={e=>setForm(p=>({...p,send_summary_emails:e.target.checked}))} className="w-4 h-4 rounded border-border accent-primary" />
+            <span className="text-sm">Auto-send conversation summary emails to customers</span>
+          </label>
+        </div>
         <div className="flex gap-4">
           {(["call_enabled","whatsapp_enabled","email_enabled"] as const).map(k => (
             <label key={k} className="flex items-center gap-2 cursor-pointer">
@@ -538,6 +595,261 @@ function SettingsTab({ agent, onUpdate }: { agent: Agent; onUpdate: (a: Agent) =
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ═══ TOOLS TAB ═══ */
+function ToolsTab({ agentId }: { agentId: string }) {
+  const [tools, setTools] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState({
+    name: "",
+    description: "",
+    method: "POST",
+    webhook_url: "",
+    parameters_schema: "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"param1\": { \"type\": \"string\", \"description\": \"example\" }\n  }\n}"
+  });
+
+  const loadTools = () => {
+    setLoading(true);
+    api.listAgentTools(agentId).then(setTools).catch(console.error).finally(() => setLoading(false));
+  };
+  useEffect(() => { loadTools(); }, [agentId]);
+
+  const handleCreate = async () => {
+    try {
+      const parsedSchema = JSON.parse(form.parameters_schema);
+      await api.createAgentTool(agentId, { ...form, parameters_schema: parsedSchema });
+      setCreating(false);
+      setForm({ ...form, name: "", description: "", webhook_url: "" });
+      loadTools();
+    } catch (e) {
+      alert("Failed to create tool. Check JSON schema.");
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Delete this tool?")) return;
+    await api.deleteAgentTool(agentId, id);
+    loadTools();
+  };
+
+  return (
+    <div className="p-6 max-w-4xl mx-auto space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-bold flex items-center gap-2"><Sparkles className="w-5 h-5 text-primary" /> Dynamic Tools</h2>
+        <button onClick={() => setCreating(!creating)} className="bg-primary text-primary-foreground px-4 py-2 rounded-xl text-sm font-medium hover:bg-primary/90 transition-all">
+          {creating ? "Cancel" : "Add Tool"}
+        </button>
+      </div>
+
+      {creating && (
+        <div className="bg-card border border-border rounded-2xl p-6 space-y-4 shadow-sm">
+          <h3 className="font-semibold mb-2">Create New Webhook Tool</h3>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium mb-1">Tool Name</label>
+              <input value={form.name} onChange={e=>setForm({...form, name: e.target.value})} placeholder="e.g. check_availability" className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Method</label>
+              <select value={form.method} onChange={e=>setForm({...form, method: e.target.value})} className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm">
+                <option>GET</option>
+                <option>POST</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Description (Instructions for AI)</label>
+            <input value={form.description} onChange={e=>setForm({...form, description: e.target.value})} placeholder="What does this do and when should the AI use it?" className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Webhook URL</label>
+            <input value={form.webhook_url} onChange={e=>setForm({...form, webhook_url: e.target.value})} placeholder="https://api.example.com/webhook" className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm font-mono" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Parameters Schema (JSON)</label>
+            <textarea value={form.parameters_schema} onChange={e=>setForm({...form, parameters_schema: e.target.value})} rows={6} className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm font-mono" />
+          </div>
+          <div className="flex justify-end pt-2">
+            <button onClick={handleCreate} disabled={!form.name || !form.webhook_url} className="bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/90 disabled:opacity-50">
+              Save Tool
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-primary" /></div>
+      ) : tools.length === 0 && !creating ? (
+        <div className="text-center py-16 text-muted-foreground bg-card rounded-2xl border border-dashed border-border">
+          <Sparkles className="w-12 h-12 mx-auto mb-3 opacity-20" />
+          <p>No tools configured.</p>
+          <p className="text-sm mt-1">Add webhooks to let your agent interact with external APIs (like booking systems or n8n).</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {tools.map(t => (
+            <div key={t.id} className="bg-card border border-border rounded-xl p-4 flex flex-col sm:flex-row gap-4 sm:items-center justify-between group">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold">{t.name}</span>
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{t.method}</span>
+                </div>
+                <p className="text-sm text-muted-foreground">{t.description}</p>
+                <p className="text-xs font-mono text-muted-foreground opacity-60 truncate max-w-sm">{t.webhook_url}</p>
+              </div>
+              <button onClick={() => handleDelete(t.id)} className="p-2 text-danger bg-danger/10 hover:bg-danger/20 rounded-lg opacity-0 group-hover:opacity-100 transition-all self-start sm:self-auto">
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══ BOOKINGS TAB ═══ */
+function BookingsTab({ agentId, agent }: { agentId: string; agent: Agent }) {
+  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [checkDate, setCheckDate] = useState("");
+  const [slots, setSlots] = useState<string[]>([]);
+  const [loadingSlots, setLoadingSlots] = useState(false);
+  const [form, setForm] = useState<{ customer_name: string; customer_email: string; customer_phone: string; booking_date: string; booking_time: string; notes: string }>({
+    customer_name: "", customer_email: "", customer_phone: "", booking_date: "", booking_time: "", notes: "",
+  });
+  const [submitting, setSubmitting] = useState(false);
+
+  const loadBookings = () => {
+    setLoading(true);
+    api.listBookings(agentId).then(setBookings).catch(console.error).finally(() => setLoading(false));
+  };
+  useEffect(() => { loadBookings(); }, [agentId]);
+
+  const checkSlots = async () => {
+    if (!checkDate) return;
+    setLoadingSlots(true);
+    try { setSlots(await api.getBookingSlots(agentId, checkDate)); }
+    catch { setSlots([]); }
+    finally { setLoadingSlots(false); }
+  };
+
+  const handleCreate = async () => {
+    if (!form.customer_name || !form.booking_date || !form.booking_time) return;
+    setSubmitting(true);
+    try {
+      await api.createBooking(agentId, form);
+      setCreating(false);
+      setForm({ customer_name: "", customer_email: "", customer_phone: "", booking_date: "", booking_time: "", notes: "" });
+      loadBookings();
+    } catch { alert("Failed to create booking. Slot might be taken."); }
+    finally { setSubmitting(false); }
+  };
+
+  const handleCancel = async (bookingId: string) => {
+    if (!confirm("Cancel this appointment?")) return;
+    try { await api.cancelBooking(agentId, bookingId); loadBookings(); }
+    catch { alert("Failed to cancel booking."); }
+  };
+
+  const statusColor: Record<string, string> = {
+    confirmed: "bg-success/10 text-success",
+    cancelled: "bg-danger/10 text-danger",
+    completed: "bg-primary/10 text-primary",
+    no_show: "bg-warning/10 text-warning",
+  };
+
+  return (
+    <div className="p-6 max-w-5xl mx-auto space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-bold flex items-center gap-2"><Calendar className="w-5 h-5 text-primary" /> Bookings</h2>
+        <button onClick={() => setCreating(!creating)} className="bg-primary text-primary-foreground px-4 py-2 rounded-xl text-sm font-medium hover:bg-primary/90 transition-all flex items-center gap-2">
+          <PlusCircle className="w-4 h-4" /> {creating ? "Cancel" : "New Booking"}
+        </button>
+      </div>
+
+      {/* Availability Checker */}
+      <div className="bg-card border border-border rounded-2xl p-4">
+        <h3 className="text-sm font-semibold mb-3 flex items-center gap-2"><Clock className="w-4 h-4 text-muted-foreground" /> Check Availability</h3>
+        <div className="flex gap-3 items-end">
+          <div className="flex-1">
+            <label className="block text-xs text-muted-foreground mb-1">Date</label>
+            <input type="date" value={checkDate} onChange={e => setCheckDate(e.target.value)} className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm" />
+          </div>
+          <button onClick={checkSlots} disabled={!checkDate || loadingSlots} className="px-4 py-2 bg-muted hover:bg-muted/80 rounded-lg text-sm font-medium disabled:opacity-50 flex items-center gap-2">
+            {loadingSlots ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />} Check
+          </button>
+        </div>
+        {slots.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {slots.map(s => (
+              <button key={s} onClick={() => { setForm(f => ({ ...f, booking_date: checkDate, booking_time: s })); setCreating(true); }}
+                className="px-3 py-1 rounded-lg bg-success/10 text-success text-xs font-medium hover:bg-success/20 transition-all">{s}</button>
+            ))}
+          </div>
+        )}
+        {checkDate && slots.length === 0 && !loadingSlots && (
+          <p className="mt-3 text-xs text-muted-foreground">No available slots on this date. Business may be closed or fully booked.</p>
+        )}
+      </div>
+
+      {/* Create Form */}
+      {creating && (
+        <div className="bg-card border border-border rounded-2xl p-6 space-y-4">
+          <h3 className="font-semibold">New Appointment</h3>
+          <div className="grid grid-cols-2 gap-4">
+            <div><label className="block text-xs text-muted-foreground mb-1">Customer Name *</label><input value={form.customer_name} onChange={e => setForm(f => ({ ...f, customer_name: e.target.value }))} placeholder="Jane Smith" className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm" /></div>
+            <div><label className="block text-xs text-muted-foreground mb-1">Customer Email</label><input type="email" value={form.customer_email} onChange={e => setForm(f => ({ ...f, customer_email: e.target.value }))} placeholder="jane@example.com" className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm" /></div>
+            <div><label className="block text-xs text-muted-foreground mb-1">Phone</label><input value={form.customer_phone} onChange={e => setForm(f => ({ ...f, customer_phone: e.target.value }))} placeholder="+1..." className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm" /></div>
+            <div><label className="block text-xs text-muted-foreground mb-1">Date *</label><input type="date" value={form.booking_date} onChange={e => setForm(f => ({ ...f, booking_date: e.target.value }))} className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm" /></div>
+            <div><label className="block text-xs text-muted-foreground mb-1">Time *</label><input type="time" value={form.booking_time} onChange={e => setForm(f => ({ ...f, booking_time: e.target.value }))} className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm" /></div>
+            <div><label className="block text-xs text-muted-foreground mb-1">Notes</label><input value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Optional..." className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm" /></div>
+          </div>
+          <div className="flex justify-end">
+            <button onClick={handleCreate} disabled={submitting || !form.customer_name || !form.booking_date || !form.booking_time} className="bg-primary text-primary-foreground px-5 py-2 rounded-xl text-sm font-medium hover:bg-primary/90 disabled:opacity-50 flex items-center gap-2">
+              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />} Book Appointment
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Bookings List */}
+      {loading ? (
+        <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-primary" /></div>
+      ) : bookings.length === 0 ? (
+        <div className="text-center py-16 text-muted-foreground bg-card rounded-2xl border border-dashed border-border">
+          <Calendar className="w-12 h-12 mx-auto mb-3 opacity-20" />
+          <p>No bookings yet. The agent can create bookings during conversations.</p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="border-b border-border text-left text-xs text-muted-foreground uppercase tracking-wider">
+              <th className="pb-3 pr-4">Date</th><th className="pb-3 pr-4">Time</th><th className="pb-3 pr-4">Customer</th><th className="pb-3 pr-4">Email</th><th className="pb-3 pr-4">Status</th><th className="pb-3 pr-4">Email Sent</th><th className="pb-3">Actions</th>
+            </tr></thead>
+            <tbody>{bookings.map(b => (
+              <tr key={b.id} className="border-b border-border/50 hover:bg-muted/30">
+                <td className="py-3 pr-4 font-medium">{b.booking_date}</td>
+                <td className="py-3 pr-4">{b.booking_time}</td>
+                <td className="py-3 pr-4">{b.customer_name || "—"}</td>
+                <td className="py-3 pr-4 text-xs text-muted-foreground">{b.customer_email || "—"}</td>
+                <td className="py-3 pr-4"><span className={cn("text-xs px-2 py-1 rounded-lg", statusColor[b.status] || "bg-muted text-muted-foreground")}>{b.status}</span></td>
+                <td className="py-3 pr-4">{b.email_sent ? <CheckCircle2 className="w-4 h-4 text-success" /> : <XCircle className="w-4 h-4 text-muted-foreground opacity-40" />}</td>
+                <td className="py-3">
+                  {b.status === "confirmed" && (
+                    <button onClick={() => handleCancel(b.id)} className="text-xs text-danger hover:underline">Cancel</button>
+                  )}
+                </td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

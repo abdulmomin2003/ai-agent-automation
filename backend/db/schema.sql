@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS agents (
   call_enabled BOOLEAN DEFAULT false,
   forward_phone_number TEXT,
 
+  -- Email notification settings
+  notification_email TEXT,           -- agent owner's email for alerts
+  send_summary_emails BOOLEAN DEFAULT true,
+
   -- Metadata
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
@@ -88,12 +92,72 @@ CREATE TABLE IF NOT EXISTS call_logs (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- ── Agent Tools (Dynamic) ────────────────────────────────────
+-- N8N-style custom tools defined per agent
+CREATE TABLE IF NOT EXISTS agent_tools (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  method TEXT DEFAULT 'POST',
+  webhook_url TEXT NOT NULL,
+  parameters_schema JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ── Bookings ─────────────────────────────────────────────────
+-- Appointment bookings managed by the agent
+CREATE TABLE IF NOT EXISTS bookings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  customer_name TEXT,
+  customer_phone TEXT,
+  customer_email TEXT,
+  booking_date DATE NOT NULL,
+  booking_time TIME NOT NULL,
+  duration_minutes INTEGER DEFAULT 60,
+  notes TEXT,
+  status TEXT DEFAULT 'confirmed', -- confirmed | cancelled | completed | no_show
+  email_sent BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(agent_id, booking_date, booking_time)
+);
+
+-- ── Availability Config ──────────────────────────────────────
+-- Per-agent weekly schedule (which days/hours are open)
+CREATE TABLE IF NOT EXISTS availability_config (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  day_of_week INTEGER NOT NULL,        -- 0=Monday, 6=Sunday
+  start_time TIME NOT NULL DEFAULT '09:00',
+  end_time TIME NOT NULL DEFAULT '17:00',
+  slot_duration_minutes INTEGER DEFAULT 60,
+  is_active BOOLEAN DEFAULT true,
+  UNIQUE(agent_id, day_of_week)
+);
+
+-- ── Blocked Slots ────────────────────────────────────────────
+-- Specific date/time ranges that are unavailable (holidays, breaks, etc.)
+CREATE TABLE IF NOT EXISTS blocked_slots (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  blocked_date DATE NOT NULL,
+  start_time TIME,             -- null = full day block
+  end_time TIME,
+  reason TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- ── Indexes ──────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_conversations_agent ON conversations(agent_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_agent ON knowledge_documents(agent_id);
 CREATE INDEX IF NOT EXISTS idx_call_logs_agent ON call_logs(agent_id);
 CREATE INDEX IF NOT EXISTS idx_call_logs_sid ON call_logs(call_sid);
+CREATE INDEX IF NOT EXISTS idx_bookings_agent ON bookings(agent_id);
+CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(agent_id, booking_date);
+CREATE INDEX IF NOT EXISTS idx_availability_agent ON availability_config(agent_id);
+CREATE INDEX IF NOT EXISTS idx_blocked_slots_agent ON blocked_slots(agent_id, blocked_date);
 
 -- ── Updated-at trigger ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION update_updated_at()
@@ -108,3 +172,6 @@ DROP TRIGGER IF EXISTS agents_updated_at ON agents;
 CREATE TRIGGER agents_updated_at
   BEFORE UPDATE ON agents
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- ── Default availability for new agents ─────────────────────
+-- (Applied via application logic, not trigger, for flexibility)

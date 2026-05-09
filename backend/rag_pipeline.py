@@ -29,13 +29,12 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = """You are a helpful, accurate assistant that answers questions based on the provided context documents.
 
 IMPORTANT RULES:
-1. Answer ONLY based on the provided context. Do not make up information.
-2. If the context does not contain enough information to answer the question, say:
+1. You MUST use the `search_knowledge_base` tool to retrieve relevant context BEFORE answering any factual questions about the business, clinic, or policies.
+2. Answer ONLY based on the retrieved context. Do not make up information.
+3. If the retrieved context does not contain enough information to answer the question, say:
    "I don't have enough information in the uploaded documents to answer this question."
-3. When referencing information, mention the source document when available.
-4. Be concise but thorough. Provide complete answers.
-5. If the context contains tables or structured data, present them clearly.
-6. If multiple documents contain relevant information, synthesize them into a coherent answer.
+4. When referencing information, mention the source document when available.
+5. Be concise but thorough. Provide complete answers.
 """
 
 
@@ -60,8 +59,13 @@ class RAGPipeline:
 
     def __init__(self, api_key: Optional[str] = None,
                  vector_store_dir: Optional[str] = None,
-                 system_prompt: Optional[str] = None):
+                 system_prompt: Optional[str] = None,
+                 custom_tools: Optional[list[dict]] = None,
+                 agent_id: Optional[str] = None,
+                 agent_name: str = "AI Agent"):
         self.api_key = api_key or settings.GROQ_API_KEY
+        self.agent_id = agent_id
+        self.agent_name = agent_name
         if not self.api_key:
             logger.warning(
                 "Groq API key not provided; running in local fallback mode (no remote LLM)."
@@ -80,10 +84,13 @@ class RAGPipeline:
             embedding_service=self.embedding_service,
         )
         try:
-            # We initialize LangGraph workflow instead of raw Groq client
+            # Initialize LangGraph workflow with agent context
             self.agent_workflow = create_agentic_workflow(
                 retriever=self.retriever,
-                api_key=self.api_key
+                api_key=self.api_key,
+                custom_tools=custom_tools,
+                agent_id=agent_id,
+                agent_name=agent_name,
             ) if self.api_key else None
         except Exception as e:
             logger.warning("Failed to initialize LangGraph workflow; LLM disabled: %s", e)
@@ -92,7 +99,7 @@ class RAGPipeline:
         # Ensure upload directory exists
         os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 
-        logger.info("RAG Pipeline initialized (vector_dir=%s)", vector_store_dir or 'default')
+        logger.info("RAG Pipeline initialized (vector_dir=%s, agent_id=%s)", vector_store_dir or 'default', agent_id)
 
     # ── Document Ingestion ─────────────────────────────────────────
 
@@ -229,7 +236,8 @@ class RAGPipeline:
         state = {
             "messages": messages,
             "system_prompt": self.system_prompt,
-            "context_chunks": [] # we could pass existing chunks here if we wanted
+            "context_chunks": [],
+            "agent_id": self.agent_id or "",
         }
 
         # Configure callbacks

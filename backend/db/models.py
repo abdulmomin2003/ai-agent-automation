@@ -29,6 +29,8 @@ class AgentCreate(BaseModel):
     email_enabled: bool = False
     call_enabled: bool = False
     forward_phone_number: Optional[str] = None
+    notification_email: Optional[str] = None      # agent owner's email for summaries/alerts
+    send_summary_emails: bool = True              # auto-send summary after each conversation
 
 
 class AgentUpdate(BaseModel):
@@ -44,6 +46,8 @@ class AgentUpdate(BaseModel):
     email_enabled: Optional[bool] = None
     call_enabled: Optional[bool] = None
     forward_phone_number: Optional[str] = None
+    notification_email: Optional[str] = None
+    send_summary_emails: Optional[bool] = None
 
 
 class Agent(BaseModel):
@@ -60,6 +64,8 @@ class Agent(BaseModel):
     email_enabled: bool = False
     call_enabled: bool = False
     forward_phone_number: Optional[str] = None
+    notification_email: Optional[str] = None
+    send_summary_emails: bool = True
     created_at: datetime
     updated_at: datetime
 

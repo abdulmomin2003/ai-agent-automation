@@ -35,6 +35,8 @@ export interface Agent {
   updated_at: string;
   document_count: number;
   conversation_count: number;
+  notification_email?: string | null;
+  send_summary_emails?: boolean;
 }
 
 export interface AgentCreate {
@@ -50,6 +52,8 @@ export interface AgentCreate {
   email_enabled?: boolean;
   call_enabled?: boolean;
   forward_phone_number?: string;
+  notification_email?: string;
+  send_summary_emails?: boolean;
 }
 
 export interface KnowledgeDocument {
@@ -108,6 +112,58 @@ export interface CallLog {
   transcript: string | null;
   forwarded_to: string | null;
   created_at: string;
+}
+
+export interface AgentTool {
+  id: string;
+  agent_id: string;
+  name: string;
+  description: string;
+  method: string;
+  webhook_url: string;
+  parameters_schema: any;
+  created_at: string;
+}
+
+export interface AgentToolCreate {
+  name: string;
+  description: string;
+  method: string;
+  webhook_url: string;
+  parameters_schema: any;
+}
+
+export interface AvailabilityEntry {
+  day_of_week: number;       // 0=Monday, 6=Sunday
+  start_time: string;        // HH:MM
+  end_time: string;          // HH:MM
+  slot_duration_minutes: number;
+  is_active: boolean;
+}
+
+export interface Booking {
+  id: string;
+  agent_id: string;
+  customer_name: string | null;
+  customer_phone: string | null;
+  customer_email: string | null;
+  booking_date: string;
+  booking_time: string;
+  duration_minutes: number;
+  notes: string | null;
+  status: string;
+  email_sent: boolean;
+  created_at: string;
+}
+
+export interface BookingCreate {
+  customer_name?: string;
+  customer_phone?: string;
+  customer_email?: string;
+  booking_date: string;
+  booking_time: string;
+  duration_minutes?: number;
+  notes?: string;
 }
 
 // ── API Methods ──────────────────────────────────────────────
@@ -203,5 +259,62 @@ export const api = {
   // ── Audio ───────────────────────────────────────────────
   getAudioUrl: (filename: string): string => {
     return `${API_BASE_URL}/audio/${filename}`;
+  },
+
+  // ── Dynamic Tools ───────────────────────────────────────
+  listAgentTools: async (agentId: string): Promise<AgentTool[]> => {
+    const res = await apiClient.get(`/agents/${agentId}/tools`);
+    return res.data.tools;
+  },
+
+  createAgentTool: async (agentId: string, data: AgentToolCreate): Promise<AgentTool> => {
+    const res = await apiClient.post(`/agents/${agentId}/tools`, data);
+    return res.data.tool;
+  },
+
+  deleteAgentTool: async (agentId: string, toolId: string): Promise<void> => {
+    await apiClient.delete(`/agents/${agentId}/tools/${toolId}`);
+  },
+
+  // ── Availability ────────────────────────────────────────────
+  getAvailability: async (agentId: string): Promise<AvailabilityEntry[]> => {
+    const res = await apiClient.get(`/agents/${agentId}/availability`);
+    return res.data.availability;
+  },
+
+  setAvailability: async (agentId: string, schedule: AvailabilityEntry[]): Promise<AvailabilityEntry[]> => {
+    const res = await apiClient.put(`/agents/${agentId}/availability`, schedule);
+    return res.data.availability;
+  },
+
+  // ── Bookings ────────────────────────────────────────────────
+  getBookingSlots: async (agentId: string, date: string): Promise<string[]> => {
+    const res = await apiClient.get(`/agents/${agentId}/bookings/slots`, { params: { date } });
+    return res.data.available_slots;
+  },
+
+  listBookings: async (agentId: string, date?: string): Promise<Booking[]> => {
+    const res = await apiClient.get(`/agents/${agentId}/bookings`, { params: date ? { date } : {} });
+    return res.data.bookings;
+  },
+
+  createBooking: async (agentId: string, data: BookingCreate): Promise<Booking> => {
+    const res = await apiClient.post(`/agents/${agentId}/bookings`, data);
+    return res.data.booking;
+  },
+
+  cancelBooking: async (agentId: string, bookingId: string): Promise<void> => {
+    await apiClient.patch(`/agents/${agentId}/bookings/${bookingId}/cancel`);
+  },
+
+  // ── Conversation Summary ────────────────────────────────────
+  endConversation: async (agentId: string, convId: string): Promise<{ summary: string }> => {
+    const res = await apiClient.post(`/agents/${agentId}/conversations/${convId}/end`);
+    return res.data;
+  },
+
+  generateSummary: async (agentId: string, convId: string): Promise<{ summary: string }> => {
+    const res = await apiClient.post(`/agents/${agentId}/conversations/${convId}/summary`);
+    return res.data;
   },
 };

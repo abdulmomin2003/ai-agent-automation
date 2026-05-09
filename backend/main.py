@@ -572,6 +572,190 @@ async def twilio_whatsapp_inbound(request: Request):
 
 
 # ══════════════════════════════════════════════════════════════
+# DYNAMIC TOOLS (per agent)
+# ══════════════════════════════════════════════════════════════
+
+class AgentToolCreate(BaseModel):
+    name: str
+    description: str
+    method: str = "POST"
+    webhook_url: str
+    parameters_schema: dict = {}
+
+@app.get("/agents/{agent_id}/tools")
+async def list_agent_tools(agent_id: str):
+    """List custom tools for an agent."""
+    from db import database as db
+    tools = db.get_agent_tools(agent_id)
+    return {"tools": tools}
+
+@app.post("/agents/{agent_id}/tools")
+async def create_agent_tool(agent_id: str, data: AgentToolCreate):
+    """Create a new custom tool for an agent."""
+    from db import database as db
+    tool = db.create_agent_tool(agent_id, data.model_dump())
+    return {"status": "success", "tool": tool}
+
+@app.delete("/agents/{agent_id}/tools/{tool_id}")
+async def delete_agent_tool(agent_id: str, tool_id: str):
+    """Delete a custom tool."""
+    from db import database as db
+    success = db.delete_agent_tool(tool_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    return {"status": "success"}
+
+
+# ══════════════════════════════════════════════════════════════
+# AVAILABILITY CONFIG (per agent)
+# ══════════════════════════════════════════════════════════════
+
+class AvailabilityEntry(BaseModel):
+    day_of_week: int           # 0=Monday … 6=Sunday
+    start_time: str            # HH:MM
+    end_time: str              # HH:MM
+    slot_duration_minutes: int = 60
+    is_active: bool = True
+
+@app.get("/agents/{agent_id}/availability")
+async def get_availability(agent_id: str):
+    """Get weekly availability schedule for an agent."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    config = manager.get_availability(agent_id)
+    return {"availability": config}
+
+@app.put("/agents/{agent_id}/availability")
+async def set_availability(agent_id: str, schedule: list[AvailabilityEntry]):
+    """Set weekly availability schedule for an agent."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    result = manager.set_availability(agent_id, [e.model_dump() for e in schedule])
+    return {"status": "success", "availability": result}
+
+
+# ══════════════════════════════════════════════════════════════
+# BOOKINGS (per agent)
+# ══════════════════════════════════════════════════════════════
+
+class BookingCreate(BaseModel):
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    customer_email: Optional[str] = None
+    booking_date: str
+    booking_time: str
+    duration_minutes: int = 60
+    notes: Optional[str] = None
+
+@app.get("/agents/{agent_id}/bookings/slots")
+async def get_booking_slots(agent_id: str, date: str):
+    """Get available booking slots for a specific date."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    slots = manager.get_available_slots(agent_id, date)
+    return {"date": date, "available_slots": slots}
+
+@app.get("/agents/{agent_id}/bookings")
+async def list_bookings(agent_id: str, date: Optional[str] = None):
+    """List all bookings for an agent, optionally filtered by date."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    bookings = manager.get_bookings(agent_id, date)
+    return {"bookings": bookings}
+
+@app.post("/agents/{agent_id}/bookings")
+async def create_booking(agent_id: str, data: BookingCreate):
+    """Create a new booking (also sends confirmation email if customer_email provided)."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    from db import database as db
+    try:
+        booking = db.create_booking(agent_id, data.model_dump())
+        # Send confirmation email if email provided
+        if data.customer_email:
+            agent = manager.get_agent(agent_id)
+            if agent:
+                from email_service import EmailService
+                email_svc = EmailService(from_name=agent.get("persona_name", "AI Agent"))
+                sent = email_svc.send_booking_confirmation_sync(
+                    to_email=data.customer_email,
+                    agent_name=agent.get("persona_name", agent.get("name", "AI Agent")),
+                    customer_name=data.customer_name or "Customer",
+                    booking_date=data.booking_date,
+                    booking_time=data.booking_time,
+                    notes=data.notes or "",
+                )
+                if sent:
+                    db.mark_booking_email_sent(booking["id"])
+        return {"status": "success", "booking": booking}
+    except Exception as e:
+        logger.error("Booking error: %s", e)
+        raise HTTPException(status_code=400, detail="Failed to create booking. Slot might be taken.")
+
+@app.patch("/agents/{agent_id}/bookings/{booking_id}/cancel")
+async def cancel_booking(agent_id: str, booking_id: str):
+    """Cancel a booking and send cancellation email."""
+    from db import database as db
+    booking = db.get_booking_by_id(booking_id)
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    db.update_booking_status(booking_id, "cancelled")
+    # Send cancellation email
+    if booking.get("customer_email") and manager:
+        agent = manager.get_agent(agent_id)
+        if agent:
+            from email_service import EmailService
+            email_svc = EmailService(from_name=agent.get("persona_name", "AI Agent"))
+            email_svc.send_cancellation_sync(
+                to_email=booking["customer_email"],
+                agent_name=agent.get("persona_name", agent.get("name", "AI Agent")),
+                customer_name=booking.get("customer_name", "Customer"),
+                booking_date=booking.get("booking_date", ""),
+                booking_time=booking.get("booking_time", ""),
+            )
+    return {"status": "success", "message": "Booking cancelled"}
+
+
+# ══════════════════════════════════════════════════════════════
+# CONVERSATION SUMMARY
+# ══════════════════════════════════════════════════════════════
+
+@app.post("/agents/{agent_id}/conversations/{conv_id}/end")
+async def end_conversation(agent_id: str, conv_id: str):
+    """
+    End a conversation: generate LLM summary, store it, and optionally
+    send a follow-up email if the conversation has a caller_email.
+    """
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    try:
+        summary = manager.generate_and_store_summary(agent_id, conv_id)
+        # Auto-send follow-up email if conversation has a caller email
+        from db import database as db
+        conv = db.get_conversation(conv_id)
+        if conv and conv.get("caller_email"):
+            agent = manager.get_agent(agent_id)
+            if agent and agent.get("send_summary_emails", True):
+                await manager.send_conversation_summary_email(
+                    agent_id, conv_id, conv["caller_email"], summary
+                )
+        return {"status": "success", "summary": summary}
+    except Exception as e:
+        logger.error("Error ending conversation: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/agents/{agent_id}/conversations/{conv_id}/summary")
+async def generate_summary(agent_id: str, conv_id: str):
+    """Manually trigger summary generation for a conversation."""
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    try:
+        summary = manager.generate_and_store_summary(agent_id, conv_id)
+        return {"status": "success", "summary": summary}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ══════════════════════════════════════════════════════════════
 # LEGACY ENDPOINTS (backward compatibility)
 # ══════════════════════════════════════════════════════════════
 
