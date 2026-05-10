@@ -1,0 +1,35 @@
+{
+  "dataset": "scifact",
+  "num_queries": 100,
+  "top_k": 10,
+  "metrics": [
+    {
+      "name": "Dense-only",
+      "ndcg@10": 0.36236,
+      "recall@5": 0.33583,
+      "precision@5": 0.076,
+      "avg_latency_s": 1.0183294916152954
+    },
+    {
+      "name": "BM25-only",
+      "ndcg@10": 0.72059,
+      "recall@5": 0.80333,
+      "precision@5": 0.174,
+      "avg_latency_s": 0.062288732528686525
+    },
+    {
+      "name": "Hybrid (no rerank)",
+      "ndcg@10": 0.69963,
+      "recall@5": 0.786,
+      "precision@5": 0.178,
+      "avg_latency_s": 1.2154001021385192
+    },
+    {
+      "name": "Hybrid + rerank",
+      "ndcg@10": 0.3863,
+      "recall@5": 0.499,
+      "precision@5": 0.116,
+      "avg_latency_s": 18.25319174528122
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+Prompts used for this project (auto-saved from current chat).
+
+1) Hi there Can you help me push the latest commit from github, and discard these local changes please?
+2) Okay, now, I want to write a report for this project. I want you to go through this repo, and generate a tex file for me. Also, follow this rubric. You can also ask me if anything you want to discuss.
+3) AI Sales Agent Platform: Multi-Agent RAG for Sales and Service Automation
+   Authors: Abdul Momin i221326, Hamza Naveed i220961
+   You should find real papers that we can cite, and then add them.
+   Results: generate the metrics on some evaluation set you can find online.
+   Dataset: Also, get a dataset online on which we will check our system.
+4) May I use web sources to find papers and a dataset? Yes. Yes, do all that. You have my approval.
+5) Do the pytorch.
+6) As for the affiliation, We are both from Department of Computer Science, FAST NUCES.
+7) 2-3 qualitative examples (queries + retrieved sources) for the Qualitative Analysis section: Do whatever you feel good to be done.
+8) Can you please help me with the latency and accuracy plots? Also with other placeholders?
+9) Generative AI Project Paper Guidelines [template text provided].
+10) Instructions, marks distribution, and submission requirements [template text provided].
+11) Now, I want you to prepare the zip for me, which I will submit.
+
+NOTE: If you used any prompts outside this chat, add them here before submission. I cannot invent or backfill missing prompts.

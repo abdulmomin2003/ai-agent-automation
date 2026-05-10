@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      target: backend
+    container_name: ai_sales_backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./backend/uploads:/app/backend/uploads
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      target: frontend-builder
+    container_name: ai_sales_frontend
+    command: npm start
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # Optional: Ngrok container to expose backend to Twilio
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: ai_sales_ngrok
+    ports:
+      - "4040:4040"
+    environment:
+      # Pass your auth token via environment variable or uncomment and replace
+      # NGROK_AUTHTOKEN: "your_ngrok_auth_token_here"
+      NGROK_CONFIG: |
+        version: "2"
+        authtoken: ${NGROK_AUTHTOKEN:-}
+        tunnels:
+          backend:
+            proto: http
+            addr: backend:8000
+    command: "start --all --config=/etc/ngrok.yml"
+    depends_on:
+      - backend
+    restart: unless-stopped

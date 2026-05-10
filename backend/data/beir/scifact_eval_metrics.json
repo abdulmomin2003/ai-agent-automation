@@ -1,0 +1,30 @@
+[
+  {
+    "name": "Dense-only",
+    "ndcg@10": 0.35573,
+    "recall@5": 0.33383,
+    "precision@5": 0.07533,
+    "avg_latency_s": 0.09717274745305379
+  },
+  {
+    "name": "BM25-only",
+    "ndcg@10": 0.65396,
+    "recall@5": 0.71694,
+    "precision@5": 0.15533,
+    "avg_latency_s": 0.07443363984425863
+  },
+  {
+    "name": "Hybrid (no rerank)",
+    "ndcg@10": 0.64508,
+    "recall@5": 0.73794,
+    "precision@5": 0.164,
+    "avg_latency_s": 0.22863595803578696
+  },
+  {
+    "name": "Hybrid + rerank",
+    "ndcg@10": 0.35689,
+    "recall@5": 0.45689,
+    "precision@5": 0.10267,
+    "avg_latency_s": 23.494254698753355
+  }
+]
