@@ -1,0 +1,18 @@
+flowchart TD
+    U[User Message] --> API[POST /agents/id/chat]
+    API --> AM[AgentManager.chat]
+    AM --> RP[RAGPipeline.query]
+
+    RP --> LG[LangGraph LLM Node]
+    LG -->|tool call| SKB[search_knowledge_base]
+    SKB --> HR[HybridRetriever.retrieve]
+    HR --> VS[VectorStore.search]
+    HR --> BM[BM25 search]
+    SKB --> LG
+
+    LG -->|tool call| Tools[Email / Booking / Custom]
+    Tools --> DB[(Postgres and Supabase)]
+    Tools --> EMO[Email Service]
+
+    LG --> RP
+    RP --> AM --> API --> U

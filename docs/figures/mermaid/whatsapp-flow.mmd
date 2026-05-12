@@ -1,0 +1,7 @@
+flowchart TD
+    User[WhatsApp User] --> TW[Twilio WhatsApp]
+    TW --> API[POST /twilio/whatsapp/inbound]
+    API --> AM[AgentManager.chat]
+    AM --> RP[RAGPipeline.query]
+    RP --> LG[LangGraph Tools + Retrieval]
+    LG --> API --> TW --> User

@@ -1,0 +1,24 @@
+flowchart LR
+    U[User] --> FE[Next.js Frontend]
+    FE -->|REST / WebSocket| API[FastAPI Backend]
+
+    API --> AM[AgentManager]
+    AM --> RP[RAGPipeline]
+
+    RP --> DP[DocumentParser]
+    RP --> CH[TextChunker]
+    RP --> EM[EmbeddingService]
+    RP --> VS[VectorStore FAISS + metadata]
+
+    RP --> HR[HybridRetriever]
+    HR --> VS
+    HR --> BM[BM25 Index]
+
+    RP --> LG[LangGraph Workflow]
+    LG --> TK[Tooling search, email, booking, custom]
+    TK --> DB[(Postgres and Supabase)]
+    TK --> EMO[Email Service]
+    TK --> TTS[TTS Service]
+
+    API --> DB
+    API --> TW[Twilio and WhatsApp]

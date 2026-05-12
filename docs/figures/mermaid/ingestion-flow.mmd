@@ -1,0 +1,12 @@
+flowchart TD
+    U[User Upload] --> API[POST /agents/id/upload]
+    API --> AM[AgentManager.upload_document]
+    AM --> RP[RAGPipeline.ingest_document]
+
+    RP --> DP[DocumentParser]
+    DP --> CH[TextChunker]
+    CH --> EM[EmbeddingService]
+    EM --> VS[VectorStore.add_documents]
+    VS --> BM[HybridRetriever.refresh_index]
+
+    AM --> DB[(knowledge_documents status update)]

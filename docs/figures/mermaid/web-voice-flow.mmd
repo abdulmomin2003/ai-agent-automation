@@ -1,0 +1,8 @@
+flowchart TD
+    Browser[Browser Mic] --> WSS[WebSocket /web/voice/stream]
+    WSS --> VAD[Silence Detection]
+    VAD --> STT[AudioService.transcribe_audio]
+    STT --> RP[RAGPipeline.query]
+    RP --> LG[LangGraph Tools + Retrieval]
+    LG --> TTS[TTSService.generate_speech]
+    TTS --> WSS --> Browser

@@ -75,6 +75,9 @@
     \subsubsection{Generation and Agentic Tool Use}
     The platform uses a Groq-hosted LLM (default: Llama-3.1-8B) via LangGraph. The agent decides whether to retrieve knowledge or invoke tools (e.g., send email, check availability, book appointments). Tool calls are logged, and the response is grounded in retrieved passages. If the system lacks relevant context, it responds with an explicit uncertainty message.
 
+    \subsubsection{LangGraph-Orchestrated Workflow}
+    We implement the agent using LangGraph as a stateful workflow with an explicit tool-use loop. The agent state includes the conversation messages, system prompt, agent identifier, and retrieved context. Each turn executes an LLM node that can either respond directly or emit tool calls. If a tool call is emitted, control flows to a tool node that executes the requested action (e.g., \texttt{search\_knowledge\_base}, \texttt{send\_email}, booking tools), then appends the tool result to the message history. The graph then returns to the LLM node, enabling multi-step reasoning over tool outputs before producing a final answer. This design enforces a structured decision process: generate $\rightarrow$ call tool $\rightarrow$ observe $\rightarrow$ answer. It also supports per-agent customization by injecting agent-specific system prompts and tool schemas into the workflow at initialization.
+
     \section{Experimental Results}
     \label{sec:exp}
     \subsection{Experimental Setup}

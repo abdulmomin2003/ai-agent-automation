@@ -1,0 +1,13 @@
+flowchart TD
+    Caller[Phone Caller] --> TW[Twilio Voice]
+    TW --> API[POST /twilio/voice/inbound]
+    API --> WS[WebSocket Media Stream]
+
+    WS --> VS[voice_stream.py]
+    VS --> STT[AudioService.transcribe_audio]
+    STT --> AM[AgentManager.chat]
+    AM --> RP[RAGPipeline.query]
+    RP --> LG[LangGraph Tools + Retrieval]
+    LG --> TTS[TTSService.generate_speech]
+
+    TTS --> VS --> TW --> Caller
