@@ -59,8 +59,20 @@
     \subsubsection{System Architecture}
     The platform follows a full-stack design with a FastAPI backend and Next.js frontend. Each agent is created through API endpoints and is assigned an isolated vector store. The backend orchestrates ingestion and querying via a RAG pipeline; the frontend exposes an administrative dashboard for creating agents and monitoring their activity. The system includes services for chat, voice streaming, and optional email notifications.
 
+    \begin{figure}[t]
+    \centering
+    \includegraphics[width=0.95\linewidth]{figures/architecture-overview.png}
+    \caption{End-to-end system architecture of the AI Sales Agent Platform.}
+    \end{figure}
+
     \subsubsection{Document Ingestion}
     Documents in multiple formats (PDF, DOCX, PPTX, XLSX/CSV, TXT/MD/HTML/JSON) are parsed into clean text. The text is then chunked with a recursive, token-aware splitter. Let $L$ be the token length of a document and $S$ be the target chunk size with overlap $O$. The chunker recursively splits by structural separators (headings, paragraphs, sentences) until each chunk respects $S$, then applies overlap $O$ for context continuity.
+
+    \begin{figure}[t]
+    \centering
+    \includegraphics[width=0.95\linewidth]{figures/ingestion-flow.png}
+    \caption{Document ingestion workflow: parse, chunk, embed, and store.}
+    \end{figure}
 
     \subsubsection{Embedding and Vector Store}
     Each chunk $c_i$ is embedded using a sentence-transformers model (default: all-MiniLM-L6-v2). Embeddings are L2-normalized and stored in a FAISS index for fast cosine similarity search. Metadata (source, file type, chunk index) is stored alongside the vectors in a JSON sidecar for persistence and filtering.
@@ -77,6 +89,12 @@
 
     \subsubsection{LangGraph-Orchestrated Workflow}
     We implement the agent using LangGraph as a stateful workflow with an explicit tool-use loop. The agent state includes the conversation messages, system prompt, agent identifier, and retrieved context. Each turn executes an LLM node that can either respond directly or emit tool calls. If a tool call is emitted, control flows to a tool node that executes the requested action (e.g., \texttt{search\_knowledge\_base}, \texttt{send\_email}, booking tools), then appends the tool result to the message history. The graph then returns to the LLM node, enabling multi-step reasoning over tool outputs before producing a final answer. This design enforces a structured decision process: generate $\rightarrow$ call tool $\rightarrow$ observe $\rightarrow$ answer. It also supports per-agent customization by injecting agent-specific system prompts and tool schemas into the workflow at initialization.
+
+    \begin{figure}[t]
+    \centering
+    \includegraphics[width=0.95\linewidth]{figures/chat-flow.png}
+    \caption{Query and generation workflow with hybrid retrieval and tool use.}
+    \end{figure}
 
     \section{Experimental Results}
     \label{sec:exp}
